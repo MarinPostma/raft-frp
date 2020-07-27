@@ -1,18 +1,53 @@
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
+use std::time::Duration;
+
 use crate::message::Message;
 use crate::message::RaftClusterInfo;
+
 use bincode::serialize;
 use log::info;
 use raft::eraftpb::{Entry, EntryType};
 use raft::{raw_node::RawNode, storage::MemStorage, Config};
-use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
-use std::time::Duration;
 use tokio::sync::mpsc::{error::TryRecvError, Receiver};
-use tokio::time::interval;
 use tokio::sync::oneshot;
+use tokio::time::interval;
+use crate::raft_service::raft_service_client::RaftServiceClient;
+use tonic::transport::channel::Channel;
+
+
+pub struct Peer {
+    addr: String,
+    client: RaftServiceClient<Channel>,
+}
+
+impl Deref for Peer {
+    type Target = RaftServiceClient<Channel>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
+
+impl DerefMut for Peer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.client
+    }
+}
+
+impl Peer {
+    pub async fn new(addr: &str) -> Result<Peer, tonic::transport::Error> {
+        // TODO: clean up this mess
+        let client = RaftServiceClient::connect(addr.to_string()).await?;
+        info!("NODE: connected to {}", addr);
+        let addr = addr.to_string();
+        Ok(Peer { addr, client })
+    }
+}
 
 pub struct RaftNode {
     inner: RawNode<MemStorage>,
+    pub peers: HashMap<u64, Peer>,
     pub rcv: Receiver<Message>,
 }
 
@@ -28,11 +63,28 @@ impl RaftNode {
         config.validate().unwrap();
 
         let inner = RawNode::new(&config, storage, vec![]).unwrap();
-        RaftNode { inner, rcv }
+
+        let peers = HashMap::new();
+
+        RaftNode { inner, rcv, peers }
+    }
+
+    pub fn peer_mut(&mut self, id: u64) -> Option<&mut Peer> {
+        self.peers.get_mut(&id)
     }
 
     pub fn is_leader(&self) -> bool {
         self.inner.raft.leader_id == self.inner.raft.id
+    }
+
+    pub fn id(&self) -> u64 {
+        self.raft.id
+    }
+
+    pub async fn add_peer(&mut self, addr: &str, id: u64) -> Result<(), tonic::transport::Error> {
+        let peer = Peer::new(addr).await?;
+        self.peers.insert(id, peer);
+        Ok(())
     }
 
     #[allow(irrefutable_let_patterns)]

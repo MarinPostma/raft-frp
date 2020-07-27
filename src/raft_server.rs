@@ -5,7 +5,7 @@ use crate::message::Message;
 use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
 use crate::raft_service::{JoinRequest, ResultReply, ResultCode};
 
-use log::{error, info};
+use log::{error, info, warn};
 use raft::eraftpb::{ConfChange, ConfChangeType};
 use tokio::sync::oneshot;
 use tokio::sync::mpsc;
@@ -27,12 +27,14 @@ impl RaftServer {
 
     pub async fn run(self) {
         let addr = self.addr.clone();
+        info!("running gRPC server on: {}", addr);
         let svc = RaftServiceServer::new(self);
         Server::builder()
             .add_service(svc)
             .serve(addr)
             .await
             .expect("error running server");
+        warn!("got here");
     }
 }
 
