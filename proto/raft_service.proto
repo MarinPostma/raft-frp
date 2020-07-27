@@ -1,0 +1,22 @@
+syntax = "proto3";
+package raftservice;
+
+service RaftService {
+  rpc Join(JoinRequest) returns (ResultReply) {}
+}
+
+enum ResultCode {
+  Ok = 0;
+  Error = 1;
+  WrongLeader = 3;
+}
+
+message JoinRequest {
+  uint64 id = 1;
+  string host = 2;
+}
+
+message ResultReply {
+    ResultCode code = 1;
+    bytes data = 2;
+}
