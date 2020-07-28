@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store: HashMap<u64, String> = HashMap::new();
 
     // TODO: setup leader election on timeout
-    let mut node = RaftNode::new(rx, id, store);
+    let mut node = RaftNode::new(rx, store, id);
 
     let server_handle = tokio::spawn(raft_server.run());
 
@@ -78,7 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // started as the leader.
     match options.peer_addr {
         Some(host) => {
-
             // add peer to node's peers
             println!("nodeid : {}", node.id());
             let peer_id = options.peer_id.unwrap();
@@ -105,11 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        None => {
-            info!("starting leader node");
-            node.raft.become_candidate();
-            node.raft.become_leader();
-        }
+        None => ()
     }
 
     let node_handle = tokio::spawn(node.run());

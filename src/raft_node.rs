@@ -54,10 +54,24 @@ pub struct RaftNode {
 }
 
 impl RaftNode {
-    pub fn new(rcv: Receiver<Message>, id: u64, store: HashMap<u64, String>) -> Self {
+    pub fn new(rcv: Receiver<Message>, store: HashMap<u64, String>, id: u64) -> Self {
         let config = Config {
             id,
             peers: vec![id],
+            election_tick: 10,
+            // Heartbeat tick is for how long the leader needs to send
+            // a heartbeat to keep alive.
+            heartbeat_tick: 3,
+            // The max size limits the max size of each appended message. Mostly, 1 MB is enough.
+            max_size_per_msg: 1024 * 1024 * 1024,
+            // Max inflight msgs that the leader sends messages to follower without
+            // receiving ACKs.
+            max_inflight_msgs: 256,
+            // The Raft applied index.
+            // You need to save your applied index when you apply the committed Raft logs.
+            applied: 0,
+            // Just for log
+            tag: format!("[{}]", 1),
             ..Default::default()
         };
         let storage = MemStorage::default();
@@ -184,7 +198,7 @@ impl RaftNode {
 
         if !ready.entries().is_empty() {
             let entries = ready.entries();
-            info!("there are entries: {:?}", entries);
+            debug!("there are entries: {:?}", entries);
             self.mut_store().wl().append(ready.entries()).unwrap();
         }
 
@@ -246,7 +260,7 @@ impl RaftNode {
             _ => unimplemented!()
         }
 
-        self.apply_conf_change(&change).unwrap();
+        let _ = self.apply_conf_change(&change);
 
         match senders.remove(&seq) {
             Some(sender) => {
@@ -266,6 +280,7 @@ impl RaftNode {
                 self.store.insert(key, value);
             }
         }
+        println!("current store: {:?}", self.store);
         if let Some(_sender) = senders.remove(&seq) { /* drop channel for now */ }
     }
 }
