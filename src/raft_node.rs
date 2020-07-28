@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::message::{Message, RaftClusterInfo, Proposal};
 
@@ -9,9 +9,9 @@ use bincode::{serialize, deserialize};
 use log::{info, debug};
 use raft::eraftpb::{Entry, EntryType, ConfChange, ConfChangeType};
 use raft::{raw_node::RawNode, storage::MemStorage, Config};
-use tokio::sync::mpsc::{error::TryRecvError, Receiver};
+use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot;
-use tokio::time::interval;
+use tokio::time::timeout;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use crate::raft_service;
 use tonic::transport::channel::Channel;
@@ -99,14 +99,15 @@ impl RaftNode {
 
     #[allow(irrefutable_let_patterns)]
     pub async fn run(mut self) {
-        let mut interval = interval(Duration::from_millis(100));
+        let mut heartbeat = Duration::from_millis(100);
+        let mut now = Instant::now();
 
         // A map to contain sender to client responses
         let mut client_send = HashMap::new();
 
-        while let _ = interval.tick().await {
-            match self.rcv.try_recv() {
-                Ok(Message::ConfigChange { chan, seq, change }) => {
+        loop {
+            match timeout(heartbeat, self.rcv.recv()).await {
+                Ok(Some(Message::ConfigChange { chan, seq, change })) => {
                     info!("NODE: conf change requested");
                     if !self.is_leader() {
                         // wrong leader send client cluster data
@@ -120,11 +121,11 @@ impl RaftNode {
                             .unwrap();
                     }
                 }
-                Ok(Message::Raft(m)) => {
+                Ok(Some(Message::Raft(m))) => {
                     debug!("raft message: to={} from={}", self.raft.id, m.from);
                     if let Ok(_a) = self.step(m) {};
                 }
-                Ok(Message::Propose {seq, proposal, chan}) => {
+                Ok(Some(Message::Propose {seq, proposal, chan})) => {
                     if !self.is_leader() {
                         // wrong leader send client cluster data
                         let leader_id = Some(self.leader());
@@ -139,12 +140,19 @@ impl RaftNode {
                         self.propose(seq, proposal).unwrap();
                     }
                 }
-                Err(TryRecvError::Empty) => (),
-                Err(TryRecvError::Closed) => break,
+                Ok(_) => unreachable!(),
+                Err(_) => (),
             }
 
             //info!("tick");
-            self.tick();
+            let elapsed = now.elapsed();
+            now = Instant::now();
+            if elapsed > heartbeat {
+                heartbeat = Duration::from_millis(100);
+                self.tick();
+            } else {
+                heartbeat -= elapsed;
+            }
 
             self.on_ready(&mut client_send).await;
         }
@@ -166,7 +174,7 @@ impl RaftNode {
                 };
                 let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
                 client.send_message(message_request).await.unwrap();
-                info!("NODE(leader): sent message");
+                debug!("NODE(leader): sent message");
             }
         }
 
@@ -194,7 +202,7 @@ impl RaftNode {
                 };
                 let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
                 client.send_message(message_request).await.unwrap();
-                info!("NODE: sent message");
+                debug!("NODE: sent message");
             }
         }
 
@@ -211,7 +219,7 @@ impl RaftNode {
                 }
 
                 match entry.get_entry_type() {
-                    EntryType::EntryNormal => self.handle_normal(&entry),
+                    EntryType::EntryNormal => self.handle_normal(&entry, client_send),
                     EntryType::EntryConfChange => self.handle_config_change(&entry, client_send).await,
                 }
             }
@@ -249,7 +257,7 @@ impl RaftNode {
         }
     }
 
-    fn handle_normal(&mut self, entry: &Entry) {
+    fn handle_normal(&mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
         let seq: u64 = deserialize(&entry.get_context()).unwrap(); 
         let proposal: Proposal = deserialize(&entry.get_data()).unwrap();
         debug!("NODE: commited entry ({}): {:?}", seq, proposal);
@@ -258,7 +266,7 @@ impl RaftNode {
                 self.store.insert(key, value);
             }
         }
-        println!("current state: {:?}", self.store);
+        if let Some(_sender) = senders.remove(&seq) { /* drop channel for now */ }
     }
 }
 

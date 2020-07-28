@@ -31,7 +31,7 @@ impl RaftServer {
 
     pub async fn run(self) {
         let addr = self.addr.clone();
-        info!("running gRPC server on: {}", addr);
+        info!("listening gRPC requests on: {}", addr);
         let svc = RaftServiceServer::new(self);
         Server::builder()
             .add_service(svc)

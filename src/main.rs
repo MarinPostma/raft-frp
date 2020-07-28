@@ -63,24 +63,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = options.node_id;
 
     // create rpc server and run it
-    let raft_server = RaftServer::new(tx.clone(), options.raft_addr);
+    let raft_server = RaftServer::new(tx.clone(), options.raft_addr.clone());
 
     let store: HashMap<u64, String> = HashMap::new();
 
     // TODO: setup leader election on timeout
     let mut node = RaftNode::new(rx, id, store);
 
+    let server_handle = tokio::spawn(raft_server.run());
+
+    let local = tokio::task::LocalSet::new();
+    let sys = actix_rt::System::run_in_tokio("server", &local);
     // if node is started without a peer addr, this is the first node of the cluster and it is
     // started as the leader.
     match options.peer_addr {
         Some(host) => {
 
             // add peer to node's peers
+            println!("nodeid : {}", node.id());
             let peer_id = options.peer_id.unwrap();
             node.add_peer(&host, peer_id).await?;
             let join_request = JoinRequest {
                 id: node.id(),
-                host,
+                host: format!("http://{}", options.raft_addr),
             };
             let request = Request::new(join_request);
 
@@ -106,20 +111,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             node.raft.become_leader();
         }
     }
-    let local = tokio::task::LocalSet::new();
-    let sys = actix_rt::System::run_in_tokio("server", &local);
-    let http_handle = tokio::spawn(
-        HttpServer::new(move || {
-            App::new()
-                .app_data(web::Data::new(tx.clone()))
-                .service(put)
-        })
-        .bind("127.0.0.1:8080")?
-        .run());
-    let server_handle = tokio::spawn(raft_server.run());
+
     let node_handle = tokio::spawn(node.run());
 
-    let _ = tokio::try_join!(node_handle, server_handle, http_handle)?;
+    if let Some(addr) = options.web_server {
+        let http_handle = tokio::spawn(
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(tx.clone()))
+                    .service(put)
+            })
+            .bind(addr)?
+            .run());
+            let _ = tokio::try_join!(server_handle, node_handle, http_handle)?;
+    } else {
+            let _ = tokio::try_join!(server_handle, node_handle)?;
+    }
+
     sys.await?;
 
     Ok(())
