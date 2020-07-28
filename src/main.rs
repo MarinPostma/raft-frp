@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let id = options.node_id;
 
     // create rpc server and run it
-    let raft_server = RaftServer::new(tx, options.raft_addr);
+    let raft_server = RaftServer::new(tx.clone(), options.raft_addr);
 
     let store: HashMap<u64, String> = HashMap::new();
 
@@ -106,13 +106,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             node.raft.become_leader();
         }
     }
-
-    let otx = tx.clone();
-
+    let local = tokio::task::LocalSet::new();
+    let sys = actix_rt::System::run_in_tokio("server", &local);
     let http_handle = tokio::spawn(
         HttpServer::new(move || {
             App::new()
-                .app_data(web::Data::new(otx.clone()))
+                .app_data(web::Data::new(tx.clone()))
                 .service(put)
         })
         .bind("127.0.0.1:8080")?
@@ -121,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_handle = tokio::spawn(node.run());
 
     let _ = tokio::try_join!(node_handle, server_handle, http_handle)?;
+    sys.await?;
 
     Ok(())
 }

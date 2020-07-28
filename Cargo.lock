@@ -1428,6 +1428,7 @@ dependencies = [
 name = "raft-test"
 version = "0.1.0"
 dependencies = [
+ "actix-rt",
  "actix-web",
  "bincode",
  "env_logger",

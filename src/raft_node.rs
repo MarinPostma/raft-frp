@@ -2,8 +2,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
-use crate::message::Message;
-use crate::message::RaftClusterInfo;
+use crate::message::{Message, RaftClusterInfo, Proposal};
 
 use protobuf::Message as PMessage;
 use bincode::{serialize, deserialize};
@@ -251,22 +250,17 @@ impl RaftNode {
     }
 
     fn handle_normal(&mut self, entry: &Entry) {
-        use std::convert::TryInto;
-
-        let entry_type = u64::from_be_bytes(entry.get_context()[..8].try_into().expect(""));
-        match entry_type {
-            0 => {
-                let k = u64::from_be_bytes(entry.get_data()[..8].try_into().expect(""));
-                let v = String::from_utf8(entry.get_data()[8..].to_vec()).unwrap();
-                debug!("commiting ({}, {}) to state", k, v);
-                self.store.insert(k, v);
+        let seq: u64 = deserialize(&entry.get_context()).unwrap(); 
+        let proposal: Proposal = deserialize(&entry.get_data()).unwrap();
+        debug!("NODE: commited entry ({}): {:?}", seq, proposal);
+        match proposal {
+            Proposal::Put { key, value } => {
+                self.store.insert(key, value);
             }
-            _ => unimplemented!(),
         }
+        println!("current state: {:?}", self.store);
     }
 }
-
-
 
 impl Deref for RaftNode {
     type Target = RawNode<MemStorage>;
