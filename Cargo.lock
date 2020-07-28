@@ -811,6 +811,7 @@ dependencies = [
  "futures",
  "log",
  "prost",
+ "protobuf",
  "raft",
  "serde",
  "structopt",

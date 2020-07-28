@@ -1,14 +1,13 @@
 use raft::eraftpb::{Message as RaftMessage, ConfChange};
 use serde::{Serialize, Deserialize};
-use std::net::SocketAddr;
 use tokio::sync::oneshot::Sender;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RaftClusterInfo {
     // if reponse contains Some(leader_id), then the request was made to the wrong leader
     // and it must be redirected to leader_id
-    leader_id: Option<u64>,
-    addrs: Vec<SocketAddr>,
+    pub leader_id: Option<u64>,
+    pub addrs: Vec<String>,
 }
 
 #[allow(dead_code)]

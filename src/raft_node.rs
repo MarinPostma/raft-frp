@@ -5,16 +5,16 @@ use std::time::Duration;
 use crate::message::Message;
 use crate::message::RaftClusterInfo;
 
-use bincode::serialize;
+use protobuf::Message as PMessage;
+use bincode::{serialize, deserialize};
 use log::info;
-use raft::eraftpb::{Entry, EntryType};
+use raft::eraftpb::{Entry, EntryType, ConfChange, ConfChangeType};
 use raft::{raw_node::RawNode, storage::MemStorage, Config};
 use tokio::sync::mpsc::{error::TryRecvError, Receiver};
 use tokio::sync::oneshot;
 use tokio::time::interval;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use tonic::transport::channel::Channel;
-
 
 pub struct Peer {
     addr: String,
@@ -87,6 +87,14 @@ impl RaftNode {
         Ok(())
     }
 
+    fn leader(&self) -> u64 {
+        self.raft.leader_id
+    }
+
+    fn peer_addrs(&self) -> Vec<String> {
+        self.peers.values().map(|Peer {ref addr, ..}| addr.to_string()).collect()
+    }
+
     #[allow(irrefutable_let_patterns)]
     pub async fn run(mut self) {
         let mut interval = interval(Duration::from_millis(100));
@@ -100,6 +108,10 @@ impl RaftNode {
                     info!("NODE: conf change requested");
                     if !self.is_leader() {
                         // wrong leader send client cluster data
+                        let leader_id = Some(self.leader());
+                        let addrs = self.peer_addrs();
+                        let cluster_info = RaftClusterInfo { leader_id, addrs };
+                        chan.send(cluster_info).unwrap();
                     } else {
                         client_send.insert(seq, chan);
                         self.propose_conf_change(serialize(&seq).unwrap(), change)
@@ -114,11 +126,11 @@ impl RaftNode {
             //info!("tick");
             self.tick();
 
-            self.on_ready(&mut client_send);
+            self.on_ready(&mut client_send).await;
         }
     }
 
-    fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
+    async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
         if !self.has_ready() {
             return;
         }
@@ -154,17 +166,42 @@ impl RaftNode {
 
                 match entry.get_entry_type() {
                     EntryType::EntryNormal => handle_normal(&entry),
-                    EntryType::EntryConfChange => handle_config_change(&entry, client_send),
+                    EntryType::EntryConfChange => self.handle_config_change(&entry, client_send).await,
                 }
             }
         }
         self.advance(ready);
     }
+
+    async fn handle_config_change(&mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
+        info!("handling config change");
+        let seq: u64 = deserialize(entry.get_context()).unwrap();
+        let mut change = ConfChange::new();
+        // we do this to deserialize the conf. Very ugly, gotta find something better
+        change.merge_from_bytes(entry.get_data()).unwrap();
+        let id = change.get_node_id();
+
+        match change.get_change_type() {
+            ConfChangeType::AddNode => {
+                let addr: String = deserialize(change.get_context()).unwrap();
+                self.add_peer(&addr, id).await.unwrap();
+                info!("NODE: added {} ({}) to peerrs", addr, id);
+            }
+            _ => unimplemented!()
+        }
+
+        self.apply_conf_change(&change).unwrap();
+
+        match senders.remove(&seq) {
+            Some(sender) => {
+                let cluster_info = RaftClusterInfo { leader_id: None, addrs: self.peer_addrs() };
+                sender.send(cluster_info).unwrap();
+            }
+            None => (),
+        }
+    }
 }
 
-fn handle_config_change(_entry: &Entry, _senders: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
-    info!("handling config change");
-}
 
 fn handle_normal(entry: &Entry) {
     use std::convert::TryInto;

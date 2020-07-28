@@ -44,7 +44,7 @@ impl RaftService for RaftServer {
         let JoinRequest { host, id } = req.into_inner();
         let mut change = ConfChange::default();
         change.set_id(id);
-        change.set_context(host.as_bytes().to_vec());
+        change.set_context(serialize(&host).unwrap());
         change.set_node_id(id);
         change.set_change_type(ConfChangeType::AddNode);
         info!("Request add: {:?}", change);
@@ -69,7 +69,10 @@ impl RaftService for RaftServer {
         // if we don't receive a response after 2secs, we timeout
         match timeout(Duration::from_secs(2), rx).await {
             Ok(Ok(cluster_info)) => {
-                reply.set_code(ResultCode::WrongLeader);
+                match cluster_info.leader_id {
+                    Some(_id) => reply.set_code(ResultCode::WrongLeader),
+                    None => reply.set_code(ResultCode::Ok),
+                }
                 reply.data = serialize(&cluster_info).expect("serialize error");
             },
             Ok(_) => unreachable!(),
@@ -81,5 +84,4 @@ impl RaftService for RaftServer {
 
         Ok(Response::new(reply))
     }
-
 }
