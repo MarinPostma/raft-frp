@@ -3,20 +3,31 @@ package raftservice;
 
 service RaftService {
   rpc Join(JoinRequest) returns (ResultReply) {}
+  rpc SendMessage(Message) returns (ResultReply) {}
+  rpc Put(Entry) returns (ResultReply) {}
 }
 
 enum ResultCode {
-  Ok = 0;
-  Error = 1;
-  WrongLeader = 3;
+  Ok            = 0;
+  Error         = 1;
+  WrongLeader   = 2;
+}
+
+message Entry {
+  uint64 key    = 1; 
+  string value  = 2;
 }
 
 message JoinRequest {
-  uint64 id = 1;
-  string host = 2;
+  uint64 id     = 1;
+  string host   = 2;
 }
 
 message ResultReply {
-    ResultCode code = 1;
-    bytes data = 2;
+  ResultCode code = 1;
+  bytes data = 2;
+}
+
+message Message {
+  bytes inner = 1;
 }

@@ -7,14 +7,16 @@ use crate::message::RaftClusterInfo;
 
 use protobuf::Message as PMessage;
 use bincode::{serialize, deserialize};
-use log::info;
+use log::{info, debug};
 use raft::eraftpb::{Entry, EntryType, ConfChange, ConfChangeType};
 use raft::{raw_node::RawNode, storage::MemStorage, Config};
 use tokio::sync::mpsc::{error::TryRecvError, Receiver};
 use tokio::sync::oneshot;
 use tokio::time::interval;
 use crate::raft_service::raft_service_client::RaftServiceClient;
+use crate::raft_service;
 use tonic::transport::channel::Channel;
+use tonic::Request;
 
 pub struct Peer {
     addr: String,
@@ -49,10 +51,11 @@ pub struct RaftNode {
     inner: RawNode<MemStorage>,
     pub peers: HashMap<u64, Peer>,
     pub rcv: Receiver<Message>,
+    pub store: HashMap<u64, String>,
 }
 
 impl RaftNode {
-    pub fn new(rcv: Receiver<Message>, id: u64) -> RaftNode {
+    pub fn new(rcv: Receiver<Message>, id: u64, store: HashMap<u64, String>) -> Self {
         let config = Config {
             id,
             peers: vec![id],
@@ -66,7 +69,7 @@ impl RaftNode {
 
         let peers = HashMap::new();
 
-        RaftNode { inner, rcv, peers }
+        RaftNode { inner, rcv, peers, store }
     }
 
     pub fn peer_mut(&mut self, id: u64) -> Option<&mut Peer> {
@@ -118,7 +121,25 @@ impl RaftNode {
                             .unwrap();
                     }
                 }
-                Ok(_) => (),
+                Ok(Message::Raft(m)) => {
+                    debug!("raft message: to={} from={}", self.raft.id, m.from);
+                    if let Ok(_a) = self.step(m) {};
+                }
+                Ok(Message::Propose {seq, proposal, chan}) => {
+                    if !self.is_leader() {
+                        // wrong leader send client cluster data
+                        let leader_id = Some(self.leader());
+                        let addrs = self.peer_addrs();
+                        let cluster_info = RaftClusterInfo { leader_id, addrs };
+                        chan.send(cluster_info).unwrap();
+                    } else {
+                        debug!("NODE: received proposal: {:?}", proposal);
+                        client_send.insert(seq, chan);
+                        let proposal = serialize(&proposal).unwrap();
+                        let seq = serialize(&seq).unwrap();
+                        self.propose(seq, proposal).unwrap();
+                    }
+                }
                 Err(TryRecvError::Empty) => (),
                 Err(TryRecvError::Closed) => break,
             }
@@ -137,6 +158,19 @@ impl RaftNode {
 
         let mut ready = self.ready();
 
+        if self.is_leader() {
+            let messages = ready.messages.drain(..);
+            for message in messages {
+                let mut client = match self.peer_mut(message.get_to()) {
+                    Some(ref peer) => peer.client.clone(),
+                    None => continue,
+                };
+                let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
+                client.send_message(message_request).await.unwrap();
+                info!("NODE(leader): sent message");
+            }
+        }
+
         if !raft::is_empty_snap(ready.snapshot()) {
             info!("there is snapshot");
         }
@@ -152,6 +186,19 @@ impl RaftNode {
             self.mut_store().wl().set_hardstate(hs.clone());
         }
 
+        if !self.is_leader() {
+            let messages = ready.messages.drain(..);
+            for message in messages {
+                let mut client = match self.peer_mut(message.get_to()) {
+                    Some(ref peer) => peer.client.clone(),
+                    None => continue,
+                };
+                let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
+                client.send_message(message_request).await.unwrap();
+                info!("NODE: sent message");
+            }
+        }
+
         if let Some(committed_entries) = ready.committed_entries.take() {
             let mut _last_apply_index = 0;
             for entry in committed_entries {
@@ -165,7 +212,7 @@ impl RaftNode {
                 }
 
                 match entry.get_entry_type() {
-                    EntryType::EntryNormal => handle_normal(&entry),
+                    EntryType::EntryNormal => self.handle_normal(&entry),
                     EntryType::EntryConfChange => self.handle_config_change(&entry, client_send).await,
                 }
             }
@@ -181,11 +228,13 @@ impl RaftNode {
         change.merge_from_bytes(entry.get_data()).unwrap();
         let id = change.get_node_id();
 
+        println!("confchange: {:?}", change);
+
         match change.get_change_type() {
             ConfChangeType::AddNode => {
                 let addr: String = deserialize(change.get_context()).unwrap();
                 self.add_peer(&addr, id).await.unwrap();
-                info!("NODE: added {} ({}) to peerrs", addr, id);
+                info!("NODE: added {} ({}) to peers", addr, id);
             }
             _ => unimplemented!()
         }
@@ -200,22 +249,24 @@ impl RaftNode {
             None => (),
         }
     }
-}
 
+    fn handle_normal(&mut self, entry: &Entry) {
+        use std::convert::TryInto;
 
-fn handle_normal(entry: &Entry) {
-    use std::convert::TryInto;
-
-    let entry_type = u64::from_be_bytes(entry.get_context()[..8].try_into().expect(""));
-    match entry_type {
-        0 => {
-            let k = u64::from_be_bytes(entry.get_data()[..8].try_into().expect(""));
-            let v = String::from_utf8(entry.get_data()[8..].to_vec()).unwrap();
-            info!("commiting ({}, {}) to state", k, v);
+        let entry_type = u64::from_be_bytes(entry.get_context()[..8].try_into().expect(""));
+        match entry_type {
+            0 => {
+                let k = u64::from_be_bytes(entry.get_data()[..8].try_into().expect(""));
+                let v = String::from_utf8(entry.get_data()[8..].to_vec()).unwrap();
+                debug!("commiting ({}, {}) to state", k, v);
+                self.store.insert(k, v);
+            }
+            _ => unimplemented!(),
         }
-        _ => unimplemented!(),
     }
 }
+
+
 
 impl Deref for RaftNode {
     type Target = RawNode<MemStorage>;

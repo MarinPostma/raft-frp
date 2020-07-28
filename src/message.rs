@@ -10,13 +10,17 @@ pub struct RaftClusterInfo {
     pub addrs: Vec<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Proposal {
+    Put { key: u64, value: String },
+}
+
 #[allow(dead_code)]
 pub enum Message {
     Propose {
         seq: u64,
-        msg_type: u64,
-        msg: String,
-        callback: Box<dyn Fn() + Send + 'static> 
+        proposal: Proposal,
+        chan: Sender<RaftClusterInfo>,
     },
     ConfigChange {
         seq: u64,
