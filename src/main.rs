@@ -49,6 +49,24 @@ async fn put(sender: web::Data<mpsc::Sender<Message>>, path: web::Path<(u64, Str
     format!("OK")
 }
 
+#[get("/remove/{id}")]
+async fn remove(sender: web::Data<mpsc::Sender<Message>>, path: web::Path<u64>) -> impl Responder {
+    let proposal = Proposal::Remove { key: path.into_inner() };
+    let (tx, rx) = oneshot::channel();
+    let message = Message::Propose {
+        seq: 100,
+        proposal,
+        chan: tx,
+    };
+
+    let _ = sender
+        .as_ref()
+        .clone()
+        .send(message)
+        .await;
+    let _ = rx.await;
+    format!("OK")
+}
 #[tokio::main]
 #[allow(irrefutable_let_patterns)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -115,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 App::new()
                     .app_data(web::Data::new(tx.clone()))
                     .service(put)
+                    .service(remove)
             })
             .bind(addr)?
             .run());

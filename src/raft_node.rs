@@ -279,6 +279,9 @@ impl RaftNode {
             Proposal::Put { key, value } => {
                 self.store.insert(key, value);
             }
+            Proposal::Remove { ref key } => {
+                self.store.remove(key);
+            }
         }
         println!("current store: {:?}", self.store);
         if let Some(_sender) = senders.remove(&seq) { /* drop channel for now */ }

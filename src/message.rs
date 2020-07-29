@@ -13,6 +13,7 @@ pub struct RaftClusterInfo {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Proposal {
     Put { key: u64, value: String },
+    Remove { key: u64 },
 }
 
 #[allow(dead_code)]
