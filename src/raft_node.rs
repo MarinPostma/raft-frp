@@ -6,7 +6,7 @@ use crate::message::{Message, Proposal, RaftResponse};
 
 use protobuf::Message as PMessage;
 use bincode::{serialize, deserialize};
-use log::{info, debug};
+use log::{info, debug, warn};
 use raft::eraftpb::{Entry, EntryType, ConfChange, ConfChangeType};
 use raft::{raw_node::RawNode, storage::MemStorage, Config};
 use tokio::sync::mpsc::Receiver;
@@ -130,6 +130,7 @@ impl RaftNode {
         // if assigned id is ourself, return next one
         let next_id = std::cmp::max(next_id + 1, self.id());
         self.peers.insert(next_id, None);
+        info!("reserving id {}", next_id);
         next_id
     }
 
@@ -166,7 +167,7 @@ impl RaftNode {
                     }
                 }
                 Ok(Some(Message::Raft(m))) => {
-                    println!("raft message: to={} from={}", self.raft.id, m.from);
+                    debug!("raft message: to={} from={}", self.raft.id, m.from);
                     if let Ok(_a) = self.step(m) {};
                 }
                 Ok(Some(Message::Propose {seq, proposal, chan})) => {
@@ -187,7 +188,6 @@ impl RaftNode {
                         let proposal = serialize(&proposal).unwrap();
                         let seq = serialize(&seq).unwrap();
                         self.propose(seq, proposal).unwrap();
-                        println!("hereeee");
                     }
                 }
                 Ok(_) => unreachable!(),
@@ -253,7 +253,10 @@ impl RaftNode {
             for message in messages {
                 let mut client = match self.peer_mut(message.get_to()) {
                     Some(ref peer) => peer.client.clone(),
-                    None => continue,
+                    None => {
+                        warn!("no client at {}", message.get_to());
+                        continue
+                    },
                 };
                 for _ in 0..10 {
                     let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });

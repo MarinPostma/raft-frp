@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sys = actix_rt::System::run_in_tokio("server", &local);
     // if node is started without a peer addr, this is the first node of the cluster and it is
     // started as the leader.
-    let node = match options.peer_addr {
+    let mut node = match options.peer_addr {
         Some(host) => {
             // add peer to node's peers
             let mut host = host.to_string();
@@ -127,6 +127,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => RaftNode::new(rx, store, 1),
     };
+
+    // add current node to it's peers, needed to comunicate it to other nodes when they join
+    let _ = node.add_peer(&format!("http://{}", options.raft_addr), node.id()).await.unwrap();
 
     let node_handle = tokio::spawn(node.run());
 
