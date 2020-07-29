@@ -107,8 +107,12 @@ impl RaftNode {
         self.raft.leader_id
     }
 
-    fn peer_addrs(&self) -> Vec<String> {
-        self.peers.values().map(|Peer {ref addr, ..}| addr.to_string()).collect()
+    fn peer_addrs(&self) -> HashMap<u64, String> {
+        self
+            .peers
+            .iter()
+            .map(|(&id, Peer {ref addr, ..})| (id, addr.to_string()))
+            .collect()
     }
 
     #[allow(irrefutable_let_patterns)]

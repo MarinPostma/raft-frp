@@ -5,16 +5,16 @@ mod message;
 
 use std::collections::HashMap;
 
+use actix_web::{get, web, App, HttpServer, Responder};
+use bincode::deserialize;
+use crate::message::{Message, Proposal, RaftClusterInfo};
 use log::info;
 use raft_node::RaftNode;
 use raft_server::RaftServer;
-use raft_service::JoinRequest;
-use raft_service::ResultCode;
+use raft_service::{JoinRequest, ResultCode};
 use structopt::StructOpt;
 use tokio::sync::{oneshot, mpsc};
 use tonic::Request;
-use actix_web::{get, web, App, HttpServer, Responder};
-use crate::message::{Message, Proposal};
 
 #[derive(Debug, StructOpt)]
 struct Options {
@@ -97,28 +97,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match options.peer_addr {
         Some(host) => {
             // add peer to node's peers
-            println!("nodeid : {}", node.id());
-            let peer_id = options.peer_id.unwrap();
-            node.add_peer(&host, peer_id).await?;
-            let join_request = JoinRequest {
-                id: node.id(),
-                host: format!("http://{}", options.raft_addr),
-            };
-            let request = Request::new(join_request);
+            let mut peer_id = options.peer_id.unwrap();
+            let mut host = host.to_string();
+            loop {
+                println!("nodeid : {}", node.id());
+                node.add_peer(&host, peer_id).await?;
+                let join_request = JoinRequest {
+                    id: node.id(),
+                    host: format!("http://{}", options.raft_addr),
+                };
+                let request = Request::new(join_request);
 
-            // get added peer and attempt to join it's cluster
-            let client = node.peer_mut(peer_id).unwrap();
-            let response = client.join(request).await?.into_inner();
-            info!("created client");
-            match response.code() {
-                ResultCode::Ok => {
-                    info!("joined successfully");
-                }
-                ResultCode::WrongLeader => {
-                    info!("Wrong leader, try again");
-                }
-                ResultCode::Error => {
-                    info!("there was an error joining the cluster");
+                // get added peer and attempt to join it's cluster
+                let client = node.peer_mut(peer_id).unwrap();
+                let response = client.join(request).await?.into_inner();
+                let info: RaftClusterInfo  = deserialize(&response.data).unwrap();
+                match response.code() {
+                    ResultCode::Ok => {
+                        info!("joined successfully");
+                        break
+                    }
+                    ResultCode::WrongLeader => {
+                        peer_id = info.leader_id.unwrap();
+                        host = info.addrs[&peer_id].clone();
+                        println!("addrs: {:?}", info.addrs);
+                        info!("Wrong leader, try again with {} at {}", peer_id, host);
+                    }
+                    ResultCode::Error => {
+                        info!("there was an error joining the cluster");
+                        break
+                    }
                 }
             }
         }

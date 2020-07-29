@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use raft::eraftpb::{Message as RaftMessage, ConfChange};
 use serde::{Serialize, Deserialize};
 use tokio::sync::oneshot::Sender;
@@ -7,7 +9,7 @@ pub struct RaftClusterInfo {
     // if reponse contains Some(leader_id), then the request was made to the wrong leader
     // and it must be redirected to leader_id
     pub leader_id: Option<u64>,
-    pub addrs: Vec<String>,
+    pub addrs: HashMap<u64, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
