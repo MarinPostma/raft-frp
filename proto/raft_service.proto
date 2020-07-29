@@ -2,9 +2,9 @@ syntax = "proto3";
 package raftservice;
 
 service RaftService {
-  rpc Join(JoinRequest) returns (ResultReply) {}
-  rpc SendMessage(Message) returns (ResultReply) {}
-  rpc Put(Entry) returns (ResultReply) {}
+  rpc Join(JoinRequest) returns (RaftResponse) {}
+  rpc SendMessage(Message) returns (RaftResponse) {}
+  rpc Put(Entry) returns (RaftResponse) {}
 }
 
 enum ResultCode {
@@ -19,13 +19,11 @@ message Entry {
 }
 
 message JoinRequest {
-  uint64 id     = 1;
-  string host   = 2;
+  string addr   = 1;
 }
 
-message ResultReply {
-  ResultCode code = 1;
-  bytes data = 2;
+message RaftResponse {
+  bytes inner = 2;
 }
 
 message Message {

@@ -1,9 +1,9 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
-use crate::message::{Message, Proposal};
+use crate::message::{Message, Proposal, RaftResponse};
 use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
-use crate::raft_service::{self, JoinRequest, ResultReply, ResultCode};
+use crate::raft_service::{self, JoinRequest};
 
 use log::{error, info, warn};
 use raft::eraftpb::{ConfChange, ConfChangeType, Message as RaftMessage};
@@ -44,12 +44,14 @@ impl RaftServer {
 
 #[tonic::async_trait]
 impl RaftService for RaftServer {
-    async fn join(&self, req: Request<JoinRequest>) -> Result<Response<ResultReply>, Status> {
-        let JoinRequest { host, id } = req.into_inner();
+    async fn join(&self, req: Request<JoinRequest>) -> Result<Response<raft_service::RaftResponse>, Status> {
+        let JoinRequest { addr } = req.into_inner();
         let mut change = ConfChange::default();
-        change.set_id(id);
-        change.set_context(serialize(&host).unwrap());
-        change.set_node_id(id);
+        // intially, a new peer address is 0, a real peer adress will be assigned later by the
+        // leader
+        change.set_id(0);
+        change.set_context(serialize(&addr).unwrap());
+        change.set_node_id(0);
         change.set_change_type(ConfChangeType::AddNode);
         info!("Request add: {:?}", change);
 
@@ -70,20 +72,16 @@ impl RaftService for RaftServer {
             Err(_) => error!("send error"),
         }
 
-        let mut reply = ResultReply::default();
+        let mut reply = raft_service::RaftResponse::default();
 
         // if we don't receive a response after 2secs, we timeout
         match timeout(Duration::from_secs(2), rx).await {
-            Ok(Ok(cluster_info)) => {
-                match cluster_info.leader_id {
-                    Some(_id) => reply.set_code(ResultCode::WrongLeader),
-                    None => reply.set_code(ResultCode::Ok),
-                }
-                reply.data = serialize(&cluster_info).expect("serialize error");
+            Ok(Ok(raft_response)) => {
+                reply.inner = serialize(&raft_response).expect("serialize error");
             },
-            Ok(_) => unreachable!(),
+            Ok(_) => (),
             Err(_e) => {
-                reply.set_code(ResultCode::Error);
+                reply.inner = serialize(&RaftResponse::Error).unwrap();
                 error!("timeout waiting for reply");
             },
         }
@@ -91,7 +89,7 @@ impl RaftService for RaftServer {
         Ok(Response::new(reply))
     }
 
-    async fn send_message(&self, request: Request<raft_service::Message>) -> Result<Response<ResultReply>, Status> {
+    async fn send_message(&self, request: Request<raft_service::Message>) -> Result<Response<raft_service::RaftResponse>, Status> {
         let request = request.into_inner();
         // again this ugly shit to serialize the message
         let mut message = RaftMessage::default();
@@ -101,10 +99,12 @@ impl RaftService for RaftServer {
             Ok(_) => (),
             Err(_) => error!("send error"),
         }
-        Ok(Response::new(ResultReply::default()))
+
+        let response = RaftResponse::Ok;
+        Ok(Response::new(raft_service::RaftResponse { inner: serialize(&response).unwrap() }))
     }
 
-    async fn put(&self, request: Request<raft_service::Entry>) -> Result<Response<ResultReply>, Status> {
+    async fn put(&self, request: Request<raft_service::Entry>) -> Result<Response<raft_service::RaftResponse>, Status> {
         let raft_service::Entry { key, value } = request.into_inner();
         let (tx, rx) = oneshot::channel();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
@@ -122,6 +122,7 @@ impl RaftService for RaftServer {
 
         let _ = rx.await;
 
-        Ok(Response::new(ResultReply::default()))
+        let response = RaftResponse::Ok;
+        Ok(Response::new(raft_service::RaftResponse { inner: serialize(&response).unwrap() }))
     }
 }

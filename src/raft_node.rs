@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
-use crate::message::{Message, RaftClusterInfo, Proposal};
+use crate::message::{Message, Proposal, RaftResponse};
 
 use protobuf::Message as PMessage;
 use bincode::{serialize, deserialize};
@@ -11,7 +11,7 @@ use raft::eraftpb::{Entry, EntryType, ConfChange, ConfChangeType};
 use raft::{raw_node::RawNode, storage::MemStorage, Config};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot;
-use tokio::time::timeout;
+use tokio::time::{timeout, delay_for};
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use crate::raft_service;
 use tonic::transport::channel::Channel;
@@ -48,7 +48,8 @@ impl Peer {
 
 pub struct RaftNode {
     inner: RawNode<MemStorage>,
-    pub peers: HashMap<u64, Peer>,
+    // the peer is optional, because an id can be reserved and later populated
+    pub peers: HashMap<u64, Option<Peer>>,
     pub rcv: Receiver<Message>,
     pub store: HashMap<u64, String>,
 }
@@ -86,7 +87,10 @@ impl RaftNode {
     }
 
     pub fn peer_mut(&mut self, id: u64) -> Option<&mut Peer> {
-        self.peers.get_mut(&id)
+        match self.peers.get_mut(&id) {
+            None => None,
+            Some(v) => v.as_mut(),
+        }
     }
 
     pub fn is_leader(&self) -> bool {
@@ -99,7 +103,7 @@ impl RaftNode {
 
     pub async fn add_peer(&mut self, addr: &str, id: u64) -> Result<(), tonic::transport::Error> {
         let peer = Peer::new(addr).await?;
-        self.peers.insert(id, peer);
+        self.peers.insert(id, Some(peer));
         Ok(())
     }
 
@@ -111,8 +115,22 @@ impl RaftNode {
         self
             .peers
             .iter()
-            .map(|(&id, Peer {ref addr, ..})| (id, addr.to_string()))
+            .filter_map(|(&id,peer)| peer.as_ref().map(|Peer { addr, .. }| (id, addr.to_string())))
             .collect()
+    }
+
+    // reserve a slot to insert node on next node addition commit
+    fn reserve_next_peer_id(&mut self) -> u64 {
+        let next_id = self
+            .peers
+            .keys()
+            .max()
+            .cloned()
+            .unwrap_or(1);
+        // if assigned id is ourself, return next one
+        let next_id = std::cmp::max(next_id + 1, self.id());
+        self.peers.insert(next_id, None);
+        next_id
     }
 
     #[allow(irrefutable_let_patterns)]
@@ -125,37 +143,51 @@ impl RaftNode {
 
         loop {
             match timeout(heartbeat, self.rcv.recv()).await {
-                Ok(Some(Message::ConfigChange { chan, seq, change })) => {
-                    info!("NODE: conf change requested");
+                Ok(Some(Message::ConfigChange { chan, seq, mut change })) => {
                     if !self.is_leader() {
                         // wrong leader send client cluster data
-                        let leader_id = Some(self.leader());
-                        let addrs = self.peer_addrs();
-                        let cluster_info = RaftClusterInfo { leader_id, addrs };
-                        chan.send(cluster_info).unwrap();
+                        let leader_id = self.leader();
+                        // leader can't be an empty node
+                        let leader_addr = self.peers[&leader_id]
+                            .as_ref()
+                            .unwrap()
+                            .addr
+                            .clone();
+                        let raft_response = RaftResponse::WrongLeader { leader_id, leader_addr };
+                        chan.send(raft_response).unwrap();
                     } else {
+                        // leader assign new id to peer
+                        let new_peer_id = self.reserve_next_peer_id();
+                        change.set_id(new_peer_id);
+                        change.set_node_id(new_peer_id);
                         client_send.insert(seq, chan);
                         self.propose_conf_change(serialize(&seq).unwrap(), change)
                             .unwrap();
                     }
                 }
                 Ok(Some(Message::Raft(m))) => {
-                    debug!("raft message: to={} from={}", self.raft.id, m.from);
+                    println!("raft message: to={} from={}", self.raft.id, m.from);
                     if let Ok(_a) = self.step(m) {};
                 }
                 Ok(Some(Message::Propose {seq, proposal, chan})) => {
                     if !self.is_leader() {
                         // wrong leader send client cluster data
-                        let leader_id = Some(self.leader());
-                        let addrs = self.peer_addrs();
-                        let cluster_info = RaftClusterInfo { leader_id, addrs };
-                        chan.send(cluster_info).unwrap();
+                        let leader_id = self.leader();
+                        // leader can't be an empty node
+                        let leader_addr = self.peers[&leader_id]
+                            .as_ref()
+                            .unwrap()
+                            .addr
+                            .clone();
+                        let raft_response = RaftResponse::WrongLeader { leader_id, leader_addr };
+                        chan.send(raft_response).unwrap();
                     } else {
                         debug!("NODE: received proposal: {:?}", proposal);
                         client_send.insert(seq, chan);
                         let proposal = serialize(&proposal).unwrap();
                         let seq = serialize(&seq).unwrap();
                         self.propose(seq, proposal).unwrap();
+                        println!("hereeee");
                     }
                 }
                 Ok(_) => unreachable!(),
@@ -176,7 +208,7 @@ impl RaftNode {
         }
     }
 
-    async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
+    async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
         if !self.has_ready() {
             return;
         }
@@ -190,8 +222,13 @@ impl RaftNode {
                     Some(ref peer) => peer.client.clone(),
                     None => continue,
                 };
-                let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                let _ = client.send_message(message_request).await;
+                for _ in 0..10 {
+                    let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
+                    match client.send_message(message_request).await {
+                        Ok(_) => break,
+                        Err(_) => delay_for(Duration::from_millis(100)).await,
+                    }
+                }
                 debug!("NODE(leader): sent message");
             }
         }
@@ -218,8 +255,13 @@ impl RaftNode {
                     Some(ref peer) => peer.client.clone(),
                     None => continue,
                 };
-                let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                let _ = client.send_message(message_request).await;
+                for _ in 0..10 {
+                    let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
+                    match client.send_message(message_request).await {
+                        Ok(_) => break,
+                        Err(_) => delay_for(Duration::from_millis(100)).await,
+                    }
+                }
                 debug!("NODE: sent message");
             }
         }
@@ -245,7 +287,7 @@ impl RaftNode {
         self.advance(ready);
     }
 
-    async fn handle_config_change(&mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
+    async fn handle_config_change(&mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
         info!("handling config change");
         let seq: u64 = deserialize(entry.get_context()).unwrap();
         let mut change = ConfChange::new();
@@ -268,14 +310,14 @@ impl RaftNode {
 
         match senders.remove(&seq) {
             Some(sender) => {
-                let cluster_info = RaftClusterInfo { leader_id: None, addrs: self.peer_addrs() };
-                sender.send(cluster_info).unwrap();
+                let response = RaftResponse::JoinSuccess { assigned_id: id, peer_addrs: self.peer_addrs() };
+                sender.send(response).unwrap();
             }
             None => (),
         }
     }
 
-    fn handle_normal(&mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftClusterInfo>>) {
+    fn handle_normal(&mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
         let seq: u64 = deserialize(&entry.get_context()).unwrap(); 
         let proposal: Proposal = deserialize(&entry.get_data()).unwrap();
         debug!("NODE: commited entry ({}): {:?}", seq, proposal);
@@ -288,7 +330,9 @@ impl RaftNode {
             }
         }
         println!("current store: {:?}", self.store);
-        if let Some(_sender) = senders.remove(&seq) { /* drop channel for now */ }
+        if let Some(sender) = senders.remove(&seq) { 
+            sender.send(RaftResponse::Ok).unwrap();
+        }
     }
 }
 

@@ -5,11 +5,11 @@ use serde::{Serialize, Deserialize};
 use tokio::sync::oneshot::Sender;
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct RaftClusterInfo {
-    // if reponse contains Some(leader_id), then the request was made to the wrong leader
-    // and it must be redirected to leader_id
-    pub leader_id: Option<u64>,
-    pub addrs: HashMap<u64, String>,
+pub enum RaftResponse {
+    WrongLeader { leader_id: u64, leader_addr: String },
+    JoinSuccess { assigned_id: u64, peer_addrs: HashMap<u64, String> },
+    Error,
+    Ok,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -23,12 +23,12 @@ pub enum Message {
     Propose {
         seq: u64,
         proposal: Proposal,
-        chan: Sender<RaftClusterInfo>,
+        chan: Sender<RaftResponse>,
     },
     ConfigChange {
         seq: u64,
         change: ConfChange,
-        chan: Sender<RaftClusterInfo>,
+        chan: Sender<RaftResponse>,
     },
     Raft(RaftMessage),
 }
