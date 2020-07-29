@@ -135,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let node_handle = tokio::spawn(node.run());
 
+    // server for testing purpose
     if let Some(addr) = options.web_server {
         let http_handle = tokio::spawn(
             HttpServer::new(move || {

@@ -71,7 +71,7 @@ impl RaftNode {
             // You need to save your applied index when you apply the committed Raft logs.
             applied: 0,
             // Just for log
-            tag: format!("[{}]", 1),
+            tag: format!("[{}]", id),
             ..Default::default()
         };
         let storage = MemStorage::default();
@@ -191,7 +191,7 @@ impl RaftNode {
                     None => continue,
                 };
                 let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                client.send_message(message_request).await.unwrap();
+                let _ = client.send_message(message_request).await;
                 debug!("NODE(leader): sent message");
             }
         }
@@ -219,7 +219,7 @@ impl RaftNode {
                     None => continue,
                 };
                 let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                client.send_message(message_request).await.unwrap();
+                let _ = client.send_message(message_request).await;
                 debug!("NODE: sent message");
             }
         }
