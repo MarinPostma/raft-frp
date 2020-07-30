@@ -2,7 +2,7 @@ syntax = "proto3";
 package raftservice;
 
 service RaftService {
-  rpc Join(JoinRequest) returns (RaftResponse) {}
+  rpc ChangeConfig(ConfigChange) returns (RaftResponse) {}
   rpc SendMessage(Message) returns (RaftResponse) {}
   rpc Put(Entry) returns (RaftResponse) {}
 }
@@ -18,8 +18,8 @@ message Entry {
   string value  = 2;
 }
 
-message JoinRequest {
-  string addr   = 1;
+message ConfigChange {
+  bytes inner = 1;
 }
 
 message RaftResponse {

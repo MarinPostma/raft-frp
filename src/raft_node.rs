@@ -222,13 +222,15 @@ impl RaftNode {
                     Some(ref peer) => peer.client.clone(),
                     None => continue,
                 };
-                for _ in 0..10 {
-                    let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                    match client.send_message(message_request).await {
-                        Ok(_) => break,
-                        Err(_) => delay_for(Duration::from_millis(100)).await,
+                tokio::spawn(async move {
+                    for _ in 0..10 {
+                        let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
+                        match client.send_message(message_request).await {
+                            Ok(_) => break,
+                            Err(_) => delay_for(Duration::from_millis(100)).await,
+                        }
                     }
-                }
+                });
                 debug!("NODE(leader): sent message");
             }
         }
@@ -258,13 +260,15 @@ impl RaftNode {
                         continue
                     },
                 };
-                for _ in 0..10 {
-                    let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                    match client.send_message(message_request).await {
-                        Ok(_) => break,
-                        Err(_) => delay_for(Duration::from_millis(100)).await,
+                tokio::spawn(async move {
+                    for _ in 0..10 {
+                        let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
+                        match client.send_message(message_request).await {
+                            Ok(_) => break,
+                            Err(_) => delay_for(Duration::from_millis(100)).await,
+                        }
                     }
-                }
+                });
                 debug!("NODE: sent message");
             }
         }

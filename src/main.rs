@@ -12,7 +12,7 @@ use crate::message::{Message, Proposal, RaftResponse};
 use log::info;
 use raft_node::RaftNode;
 use raft_server::RaftServer;
-use raft_service::JoinRequest;
+use raft_service::ConfigChange;
 use raft_service::raft_service_client::RaftServiceClient;
 use structopt::StructOpt;
 use tokio::sync::{oneshot, mpsc};

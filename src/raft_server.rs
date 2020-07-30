@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::message::{Message, Proposal, RaftResponse};
 use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
-use crate::raft_service::{self, JoinRequest};
+use crate::raft_service::{self, ConfigChange};
 
 use log::{error, info, warn};
 use raft::eraftpb::{ConfChange, ConfChangeType, Message as RaftMessage};
@@ -44,9 +44,9 @@ impl RaftServer {
 
 #[tonic::async_trait]
 impl RaftService for RaftServer {
-    async fn join(&self, req: Request<JoinRequest>) -> Result<Response<raft_service::RaftResponse>, Status> {
-        let JoinRequest { addr } = req.into_inner();
+    async fn change_config(&self, req: Request<ConfigChange>) -> Result<Response<raft_service::RaftResponse>, Status> {
         let mut change = ConfChange::default();
+        change.merge_from_bytes(&req.into_inner().inner);
         // intially, a new peer address is 0, a real peer adress will be assigned later by the
         // leader
         change.set_id(0);
