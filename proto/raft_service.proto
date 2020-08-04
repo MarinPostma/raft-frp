@@ -2,9 +2,10 @@ syntax = "proto3";
 package raftservice;
 
 service RaftService {
+  rpc RequestId(Empty) returns (IdRequestReponse) {}
   rpc ChangeConfig(ConfigChange) returns (RaftResponse) {}
   rpc SendMessage(Message) returns (RaftResponse) {}
-  rpc Put(Entry) returns (RaftResponse) {}
+  rpc Propose(Proposal) returns (RaftResponse) {}
 }
 
 enum ResultCode {
@@ -12,6 +13,17 @@ enum ResultCode {
   Error         = 1;
   WrongLeader   = 2;
 }
+
+message Proposal {
+  bytes inner = 1;
+}
+
+message IdRequestReponse{
+  ResultCode code = 1;
+  bytes data = 2;
+}
+
+message Empty {}
 
 message Entry {
   uint64 key    = 1; 

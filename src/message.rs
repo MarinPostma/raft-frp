@@ -12,17 +12,12 @@ pub enum RaftResponse {
     Ok,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub enum Proposal {
-    Put { key: u64, value: String },
-    Remove { key: u64 },
-}
-
 #[allow(dead_code)]
-pub enum Message {
+pub enum Message<P>
+where P: Sync + Send {
     Propose {
         seq: u64,
-        proposal: Proposal,
+        proposal: P,
         chan: Sender<RaftResponse>,
     },
     ConfigChange {

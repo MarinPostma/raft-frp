@@ -1,12 +1,12 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
-use crate::message::{Message, Proposal, RaftResponse};
+use crate::message::{Message, RaftResponse};
 use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
-use crate::raft_service::{self, ConfigChange};
+use crate::raft_service::{self, ConfigChange, Empty, Proposal};
 
-use log::{error, info, warn};
-use raft::eraftpb::{ConfChange, ConfChangeType, Message as RaftMessage};
+use log::{error, info};
+use raft::eraftpb::{ConfChange, Message as RaftMessage};
 use tokio::sync::oneshot;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -16,14 +16,14 @@ use bincode::serialize;
 use protobuf::Message as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct RaftServer {
-    snd: mpsc::Sender<Message>,
+pub struct RaftServer<M: Send + Sync + 'static> {
+    snd: mpsc::Sender<Message<M>>,
     addr: SocketAddr,
     seq: AtomicU64,
 }
 
-impl RaftServer {
-    pub fn new<A: ToSocketAddrs>(snd: mpsc::Sender<Message>, addr: A) -> Self {
+impl<M: Send + Sync> RaftServer<M> {
+    pub fn new<A: ToSocketAddrs>(snd: mpsc::Sender<Message<M>>, addr: A) -> Self {
         let addr = addr.to_socket_addrs().unwrap().next().unwrap();
         let seq = AtomicU64::new(0);
         RaftServer { snd, addr, seq }
@@ -38,22 +38,23 @@ impl RaftServer {
             .serve(addr)
             .await
             .expect("error running server");
-        warn!("got here");
     }
 }
 
 #[tonic::async_trait]
-impl RaftService for RaftServer {
+impl<M: Send + Sync> RaftService for RaftServer<M> {
+    async fn request_id(&self, _req: Request<Empty>) -> Result<Response<raft_service::IdRequestReponse>, Status> {
+        unimplemented!()
+    }
+
+    async fn propose(&self, _req: Request<Proposal>) -> Result<Response<raft_service::RaftResponse>, Status> {
+        unimplemented!()
+    }
+
     async fn change_config(&self, req: Request<ConfigChange>) -> Result<Response<raft_service::RaftResponse>, Status> {
+
         let mut change = ConfChange::default();
-        change.merge_from_bytes(&req.into_inner().inner);
-        // intially, a new peer address is 0, a real peer adress will be assigned later by the
-        // leader
-        change.set_id(0);
-        change.set_context(serialize(&addr).unwrap());
-        change.set_node_id(0);
-        change.set_change_type(ConfChangeType::AddNode);
-        info!("Request add: {:?}", change);
+        change.merge_from_bytes(&req.into_inner().inner).unwrap();
 
         let mut sender = self.snd.clone();
 
@@ -99,28 +100,6 @@ impl RaftService for RaftServer {
             Ok(_) => (),
             Err(_) => error!("send error"),
         }
-
-        let response = RaftResponse::Ok;
-        Ok(Response::new(raft_service::RaftResponse { inner: serialize(&response).unwrap() }))
-    }
-
-    async fn put(&self, request: Request<raft_service::Entry>) -> Result<Response<raft_service::RaftResponse>, Status> {
-        let raft_service::Entry { key, value } = request.into_inner();
-        let (tx, rx) = oneshot::channel();
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-
-        let message = Message::Propose {
-            seq,
-            proposal: Proposal::Put {key, value},
-            chan: tx,
-        };
-
-        match self.snd.clone().send(message).await {
-            Ok(_) => (),
-            Err(_) => error!("send error"),
-        }
-
-        let _ = rx.await;
 
         let response = RaftResponse::Ok;
         Ok(Response::new(raft_service::RaftResponse { inner: serialize(&response).unwrap() }))

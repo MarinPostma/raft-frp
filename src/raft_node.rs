@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::sync::{RwLock, Arc};
 use std::time::{Duration, Instant};
 
-use crate::message::{Message, Proposal, RaftResponse};
+use crate::raft::Store;
+use crate::message::{Message, RaftResponse};
 
 use protobuf::Message as PMessage;
 use bincode::{serialize, deserialize};
@@ -46,16 +48,16 @@ impl Peer {
     }
 }
 
-pub struct RaftNode {
+pub struct RaftNode<S: Store> {
     inner: RawNode<MemStorage>,
     // the peer is optional, because an id can be reserved and later populated
     pub peers: HashMap<u64, Option<Peer>>,
-    pub rcv: Receiver<Message>,
-    pub store: HashMap<u64, String>,
+    pub rcv: Receiver<Message<S::Message>>,
+    store: Arc<RwLock<S>>,
 }
 
-impl RaftNode {
-    pub fn new(rcv: Receiver<Message>, store: HashMap<u64, String>, id: u64) -> Self {
+impl<S: Store> RaftNode<S> {
+    pub fn new(rcv: Receiver<Message<S::Message>>, id: u64, store: Arc<RwLock<S>>) -> Self {
         let config = Config {
             id,
             peers: vec![id],
@@ -85,6 +87,7 @@ impl RaftNode {
 
         RaftNode { inner, rcv, peers, store }
     }
+
 
     pub fn peer_mut(&mut self, id: u64) -> Option<&mut Peer> {
         match self.peers.get_mut(&id) {
@@ -134,7 +137,6 @@ impl RaftNode {
         next_id
     }
 
-    #[allow(irrefutable_let_patterns)]
     pub async fn run(mut self) {
         let mut heartbeat = Duration::from_millis(100);
         let mut now = Instant::now();
@@ -183,7 +185,6 @@ impl RaftNode {
                         let raft_response = RaftResponse::WrongLeader { leader_id, leader_addr };
                         chan.send(raft_response).unwrap();
                     } else {
-                        debug!("NODE: received proposal: {:?}", proposal);
                         client_send.insert(seq, chan);
                         let proposal = serialize(&proposal).unwrap();
                         let seq = serialize(&seq).unwrap();
@@ -208,7 +209,7 @@ impl RaftNode {
         }
     }
 
-    async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
+        async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
         if !self.has_ready() {
             return;
         }
@@ -324,26 +325,21 @@ impl RaftNode {
         }
     }
 
-    fn handle_normal(&mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
+    fn handle_normal( &mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
         let seq: u64 = deserialize(&entry.get_context()).unwrap(); 
-        let proposal: Proposal = deserialize(&entry.get_data()).unwrap();
-        debug!("NODE: commited entry ({}): {:?}", seq, proposal);
-        match proposal {
-            Proposal::Put { key, value } => {
-                self.store.insert(key, value);
-            }
-            Proposal::Remove { ref key } => {
-                self.store.remove(key);
-            }
-        }
-        println!("current store: {:?}", self.store);
+        let proposal: S::Message = deserialize(&entry.get_data()).unwrap();
+        self.store
+            .write()
+            .unwrap()
+            .apply(proposal)
+            .unwrap();
         if let Some(sender) = senders.remove(&seq) { 
             sender.send(RaftResponse::Ok).unwrap();
         }
     }
 }
 
-impl Deref for RaftNode {
+impl<S: Store> Deref for RaftNode<S> {
     type Target = RawNode<MemStorage>;
 
     fn deref(&self) -> &Self::Target {
@@ -351,7 +347,7 @@ impl Deref for RaftNode {
     }
 }
 
-impl DerefMut for RaftNode {
+impl<S: Store> DerefMut for RaftNode<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
