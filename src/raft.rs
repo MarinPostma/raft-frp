@@ -12,6 +12,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tonic::Request;
 use bincode::serialize;
+use log::warn;
 
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -110,6 +111,7 @@ impl<S: Store + 'static> Raft<S> {
         let _server_handle = tokio::spawn(server.run());
         let node_handle = tokio::spawn(node.run());
         tokio::try_join!(node_handle)?;
+        warn!("leaving leader node");
 
         Ok(())
     }

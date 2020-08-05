@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // setup runtime for actix
     let local = tokio::task::LocalSet::new();
-    let sys = actix_rt::System::run_in_tokio("server", &local);
+    let _sys = actix_rt::System::run_in_tokio("server", &local);
 
     match options.peer_addr {
         Some(addr) => {
@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mailbox = Arc::new(raft.mailbox());
             let raft = tokio::spawn(raft.lead());
             let http_addr = options.web_server.clone().unwrap();
-            let server = tokio::spawn(
+            let _server = tokio::spawn(
                 HttpServer::new(move || {
                     App::new()
                         .app_data(web::Data::new(mailbox.clone()))
@@ -94,11 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap()
                 .run()
             );
-            let (res1, _res2) = tokio::try_join!(raft, server)?;
-            res1?;
+            let _ = tokio::try_join!(raft)?;
         }
     }
 
-    sys.await?;
     Ok(())
 }
