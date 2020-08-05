@@ -1,16 +1,16 @@
-mod raft_service;
-mod raft_server;
-mod raft_node;
 mod message;
 mod raft;
+mod raft_node;
+mod raft_server;
+mod raft_service;
 
-use std::sync::Arc;
-use std::collections::HashMap;
-use structopt::StructOpt;
+use crate::raft::{Mailbox, Raft, RaftError, Store};
 use actix_web::{get, web, App, HttpServer, Responder};
-use crate::raft::{Raft, Mailbox, Store, RaftError};
-use serde::{Serialize, Deserialize};
 use log::info;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 struct Options {
@@ -24,7 +24,7 @@ struct Options {
 
 #[derive(Serialize, Deserialize)]
 pub enum Message {
-    Insert { key: u64, value: String }
+    Insert { key: u64, value: String },
 }
 
 impl Store for HashMap<u64, String> {
@@ -43,11 +43,26 @@ impl Store for HashMap<u64, String> {
 }
 
 #[get("/put/{id}/{name}")]
-async fn put(mailbox: web::Data<Mailbox<Message>>, path: web::Path<(u64, String)>) -> impl Responder {
-    let message = Message::Insert { key: path.0, value: path.1.clone() };
+async fn put(
+    mailbox: web::Data<Arc<Mailbox<Message>>>,
+    path: web::Path<(u64, String)>,
+) -> impl Responder {
+    let message = Message::Insert {
+        key: path.0,
+        value: path.1.clone(),
+    };
     mailbox.send(message).await.unwrap();
     "OK".to_string()
 }
+
+#[get("/leave")]
+async fn leave(
+    mailbox: web::Data<Arc<Mailbox<Message>>>,
+) -> impl Responder {
+    mailbox.leave().await.unwrap();
+    "OK".to_string()
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,25 +76,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match options.peer_addr {
         Some(addr) => {
-            Raft::new(options.raft_addr, store)
-                .join(&addr)
-                .await?;
+            Raft::new(options.raft_addr, store).join(&addr).await?;
         }
         None => {
             let raft = Raft::new(options.raft_addr, store);
             let mailbox = Arc::new(raft.mailbox());
             let raft = tokio::spawn(raft.lead());
             let http_addr = options.web_server.clone().unwrap();
-            let server = tokio::spawn(async move {
+            let server = tokio::spawn(
                 HttpServer::new(move || {
                     App::new()
                         .app_data(web::Data::new(mailbox.clone()))
                         .service(put)
+                        .service(leave)
                 })
                 .bind(http_addr)
-                    .unwrap()
-                    .run()
-            });
+                .unwrap()
+                .run()
+            );
             let (res1, _res2) = tokio::try_join!(raft, server)?;
             res1?;
         }
