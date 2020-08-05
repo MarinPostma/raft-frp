@@ -16,14 +16,14 @@ pub enum RaftResponse {
 pub enum Message<P>
 where P: Sync + Send {
     Propose {
-        seq: u64,
         proposal: P,
         chan: Sender<RaftResponse>,
     },
     ConfigChange {
-        seq: u64,
         change: ConfChange,
         chan: Sender<RaftResponse>,
     },
+    RequestId { chan: Sender<u64> },
+    ReportUnreachable { node_id: u64 },
     Raft(RaftMessage),
 }

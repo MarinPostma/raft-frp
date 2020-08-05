@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::message::{Message, RaftResponse};
 use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
-use crate::raft_service::{self, ConfigChange, Empty, Proposal};
+use crate::raft_service::{self, ConfigChange, Empty };
 
 use log::{error, info};
 use raft::eraftpb::{ConfChange, Message as RaftMessage};
@@ -14,19 +14,16 @@ use tonic::transport::Server;
 use tonic::{Status, Response, Request};
 use bincode::serialize;
 use protobuf::Message as _;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct RaftServer<M: Send + Sync + 'static> {
     snd: mpsc::Sender<Message<M>>,
     addr: SocketAddr,
-    seq: AtomicU64,
 }
 
 impl<M: Send + Sync> RaftServer<M> {
     pub fn new<A: ToSocketAddrs>(snd: mpsc::Sender<Message<M>>, addr: A) -> Self {
         let addr = addr.to_socket_addrs().unwrap().next().unwrap();
-        let seq = AtomicU64::new(0);
-        RaftServer { snd, addr, seq }
+        RaftServer { snd, addr }
     }
 
     pub async fn run(self) {
@@ -43,12 +40,15 @@ impl<M: Send + Sync> RaftServer<M> {
 
 #[tonic::async_trait]
 impl<M: Send + Sync> RaftService for RaftServer<M> {
-    async fn request_id(&self, _req: Request<Empty>) -> Result<Response<raft_service::IdRequestReponse>, Status> {
-        unimplemented!()
-    }
-
-    async fn propose(&self, _req: Request<Proposal>) -> Result<Response<raft_service::RaftResponse>, Status> {
-        unimplemented!()
+    async fn request_id(&self, _: Request<Empty>) -> Result<Response<raft_service::IdRequestReponse>, Status> {
+        let mut sender = self.snd.clone();
+        let (tx, rx) = oneshot::channel();
+        let _ = sender.send(Message::RequestId { chan: tx }).await;
+        let id = rx.await.unwrap();
+        Ok(Response::new(raft_service::IdRequestReponse {
+            code: raft_service::ResultCode::Ok as i32,
+            data: serialize(&(1u64, id)).unwrap(),
+        }))
     }
 
     async fn change_config(&self, req: Request<ConfigChange>) -> Result<Response<raft_service::RaftResponse>, Status> {
@@ -60,10 +60,7 @@ impl<M: Send + Sync> RaftService for RaftServer<M> {
 
         let (tx, rx) = oneshot::channel();
 
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-
         let message = Message::ConfigChange {
-            seq,
             change,
             chan: tx,
         };

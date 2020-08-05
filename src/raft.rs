@@ -7,11 +7,13 @@ use crate::raft_service::{Empty, ResultCode};
 use anyhow::{anyhow, Result};
 use bincode::deserialize;
 use protobuf::Message as _;
-use raft::eraftpb::ConfChange;
+use raft::eraftpb::{ConfChange, ConfChangeType};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tonic::Request;
+use bincode::serialize;
+use log::info;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -52,6 +54,7 @@ impl Store for HashMap<u64, String> {
     fn apply(&mut self, message: Self::Message) -> Result<(), Self::Error> {
         match message {
             MyMessage::Insert { key, value } => {
+                info!("inserting: ({}, {})", key, value);
                 self.insert(key, value);
             }
         }
@@ -66,7 +69,7 @@ pub async fn run<S: Store + 'static>(
     rx: mpsc::Receiver<Message<S::Message>>,
 ) -> Result<()> {
     // TODO: arbitrary buffer length, may need to tune this?
-    let node = RaftNode::new(rx, 1, store);
+    let node = RaftNode::new_leader(rx, tx.clone(), store);
     let server = RaftServer::new(tx, raft_addr);
     let server_handle = tokio::spawn(server.run());
     let node_handle = tokio::spawn(node.run());
@@ -84,7 +87,7 @@ pub async fn join<S: Store + 'static>(
 ) -> Result<()> {
     // 1. try to discover the leader and obtain an id from it.
     let mut leader_addr = peer_addr.to_string();
-    let (mut client, id): (_, u64) = loop {
+    let (leader_id, node_id): (u64, u64) = loop {
         let mut client = RaftServiceClient::connect(format!("http://{}", leader_addr)).await?;
         let response = client
             .request_id(Request::new(Empty::default()))
@@ -96,7 +99,7 @@ pub async fn join<S: Store + 'static>(
                 leader_addr = leader.addr;
                 continue;
             }
-            ResultCode::Ok => break (client, deserialize(&response.data)?),
+            ResultCode::Ok => break deserialize(&response.data)?,
             ResultCode::Error => {
                 return Err(anyhow!(
                     "join error: {}",
@@ -107,7 +110,9 @@ pub async fn join<S: Store + 'static>(
     };
 
     // 2. run server and node to prepare for joining
-    let node = RaftNode::new(rx, id, store);
+    let mut node = RaftNode::new_follower(rx, tx.clone(), node_id, store);
+    node.add_peer(&leader_addr, leader_id).await?;
+    let mut client = node.peer_mut(leader_id).unwrap().clone();
     let server = RaftServer::new(tx, raft_addr);
     let server_handle = tokio::spawn(server.run());
     let node_handle = tokio::spawn(node.run());
@@ -115,9 +120,9 @@ pub async fn join<S: Store + 'static>(
     // 3. Join the cluster
     // TODO: handle leader change
     let mut change = ConfChange::default();
-    change.set_id(id);
-    change.set_node_id(id);
-    change.set_context(raft_addr.as_bytes().to_vec());
+    change.set_node_id(node_id);
+    change.set_change_type(ConfChangeType::AddNode);
+    change.set_context(serialize(&raft_addr)?);
     client
         .change_config(Request::new(ConfigChange {
             inner: change.write_to_bytes()?,

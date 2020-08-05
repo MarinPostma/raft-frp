@@ -2,22 +2,59 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{RwLock, Arc};
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::raft::Store;
 use crate::message::{Message, RaftResponse};
 
 use protobuf::Message as PMessage;
 use bincode::{serialize, deserialize};
-use log::{info, debug, warn};
+use log::{info, debug, error};
 use raft::eraftpb::{Entry, EntryType, ConfChange, ConfChangeType};
+use raft::prelude::*;
 use raft::{raw_node::RawNode, storage::MemStorage, Config};
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::time::{timeout, delay_for};
+use tokio::time::timeout;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use crate::raft_service;
 use tonic::transport::channel::Channel;
 use tonic::Request;
+
+struct MessageSender<M>
+where M: Send + Sync + 'static{
+    message: Vec<u8>,
+    client: RaftServiceClient<tonic::transport::channel::Channel>,
+    client_id: u64,
+    chan: mpsc::Sender<Message<M>>,
+    max_retries: usize,
+    timeout: Duration,
+}
+
+impl<M> MessageSender<M>
+where M: Send + Sync + 'static,
+      {
+          async fn send(mut self) {
+              let mut current_retry = 0usize;
+
+              loop {
+                  let message_request = Request::new(raft_service::Message { inner: self.message.clone() });
+                  match self.client.send_message(message_request).await {
+                      Ok(_) => return,
+                      Err(_) => {
+                          if current_retry < self.max_retries {
+                              current_retry += 1;
+                              tokio::time::delay_for(self.timeout).await;
+                          } else {
+                              let _ = self.chan.send(Message::ReportUnreachable { node_id: self.client_id }).await;
+                              return
+                          }
+                      }
+                  }
+              }
+
+          }
+      }
 
 pub struct Peer {
     addr: String,
@@ -41,7 +78,7 @@ impl DerefMut for Peer {
 impl Peer {
     pub async fn new(addr: &str) -> Result<Peer, tonic::transport::Error> {
         // TODO: clean up this mess
-        let client = RaftServiceClient::connect(addr.to_string()).await?;
+        let client = RaftServiceClient::connect(format!("http://{}", addr)).await?;
         info!("NODE: connected to {}", addr);
         let addr = addr.to_string();
         Ok(Peer { addr, client })
@@ -52,42 +89,69 @@ pub struct RaftNode<S: Store> {
     inner: RawNode<MemStorage>,
     // the peer is optional, because an id can be reserved and later populated
     pub peers: HashMap<u64, Option<Peer>>,
-    pub rcv: Receiver<Message<S::Message>>,
+    pub rcv: mpsc::Receiver<Message<S::Message>>,
+    pub snd: mpsc::Sender<Message<S::Message>>,
     store: Arc<RwLock<S>>,
+    seq: AtomicU64,
 }
 
-impl<S: Store> RaftNode<S> {
-    pub fn new(rcv: Receiver<Message<S::Message>>, id: u64, store: Arc<RwLock<S>>) -> Self {
+impl<S: Store + 'static> RaftNode<S> {
+    pub fn new_leader(
+        rcv: mpsc::Receiver<Message<S::Message>>,
+        snd: mpsc::Sender<Message<S::Message>>,
+        store: Arc<RwLock<S>>
+    ) -> Self {
         let config = Config {
-            id,
-            peers: vec![id],
+            id: 1,
+            peers: vec![1],
             election_tick: 10,
             // Heartbeat tick is for how long the leader needs to send
             // a heartbeat to keep alive.
             heartbeat_tick: 3,
-            // The max size limits the max size of each appended message. Mostly, 1 MB is enough.
-            max_size_per_msg: 1024 * 1024 * 1024,
-            // Max inflight msgs that the leader sends messages to follower without
-            // receiving ACKs.
-            max_inflight_msgs: 256,
-            // The Raft applied index.
-            // You need to save your applied index when you apply the committed Raft logs.
-            applied: 0,
             // Just for log
-            tag: format!("[{}]", id),
+            tag: format!("[{}]", 1),
             ..Default::default()
         };
-        let storage = MemStorage::default();
 
         config.validate().unwrap();
+
+        let storage = MemStorage::default();
 
         let inner = RawNode::new(&config, storage, vec![]).unwrap();
 
         let peers = HashMap::new();
+        let seq = AtomicU64::new(0);
 
-        RaftNode { inner, rcv, peers, store }
+        RaftNode { inner, rcv, peers, store, seq, snd }
     }
 
+    pub fn new_follower(
+        rcv: mpsc::Receiver<Message<S::Message>>,
+        snd: mpsc::Sender<Message<S::Message>>,
+        id: u64, store: Arc<RwLock<S>>
+    ) -> Self {
+        let config = Config {
+            id,
+            election_tick: 10,
+            // Heartbeat tick is for how long the leader needs to send
+            // a heartbeat to keep alive.
+            heartbeat_tick: 3,
+            // Just for log
+            tag: format!("[{}]", id),
+            ..Default::default()
+        };
+
+        config.validate().unwrap();
+
+        let storage = MemStorage::default();
+
+        let inner = RawNode::new(&config, storage, vec![]).unwrap();
+
+        let peers = HashMap::new();
+        let seq = AtomicU64::new(0);
+
+        RaftNode { inner, rcv, peers, store, seq, snd }
+    }
 
     pub fn peer_mut(&mut self, id: u64) -> Option<&mut Peer> {
         match self.peers.get_mut(&id) {
@@ -146,7 +210,7 @@ impl<S: Store> RaftNode<S> {
 
         loop {
             match timeout(heartbeat, self.rcv.recv()).await {
-                Ok(Some(Message::ConfigChange { chan, seq, mut change })) => {
+                Ok(Some(Message::ConfigChange { chan, change })) => {
                     if !self.is_leader() {
                         // wrong leader send client cluster data
                         let leader_id = self.leader();
@@ -160,9 +224,7 @@ impl<S: Store> RaftNode<S> {
                         chan.send(raft_response).unwrap();
                     } else {
                         // leader assign new id to peer
-                        let new_peer_id = self.reserve_next_peer_id();
-                        change.set_id(new_peer_id);
-                        change.set_node_id(new_peer_id);
+                        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
                         client_send.insert(seq, chan);
                         self.propose_conf_change(serialize(&seq).unwrap(), change)
                             .unwrap();
@@ -172,7 +234,7 @@ impl<S: Store> RaftNode<S> {
                     debug!("raft message: to={} from={}", self.raft.id, m.from);
                     if let Ok(_a) = self.step(m) {};
                 }
-                Ok(Some(Message::Propose {seq, proposal, chan})) => {
+                Ok(Some(Message::Propose {proposal, chan})) => {
                     if !self.is_leader() {
                         // wrong leader send client cluster data
                         let leader_id = self.leader();
@@ -185,12 +247,21 @@ impl<S: Store> RaftNode<S> {
                         let raft_response = RaftResponse::WrongLeader { leader_id, leader_addr };
                         chan.send(raft_response).unwrap();
                     } else {
+                        info!("leader received proposal");
+                        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
                         client_send.insert(seq, chan);
                         let proposal = serialize(&proposal).unwrap();
                         let seq = serialize(&seq).unwrap();
                         self.propose(seq, proposal).unwrap();
                     }
                 }
+                Ok(Some(Message::RequestId { chan })) => {
+                    let id = self.reserve_next_peer_id();
+                    chan.send(id).unwrap();
+                },
+                Ok(Some(Message::ReportUnreachable { node_id })) => {
+                    self.report_unreachable(node_id);
+                },
                 Ok(_) => unreachable!(),
                 Err(_) => (),
             }
@@ -209,41 +280,27 @@ impl<S: Store> RaftNode<S> {
         }
     }
 
-        async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
+    async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
         if !self.has_ready() {
             return;
         }
 
         let mut ready = self.ready();
 
-        if self.is_leader() {
-            let messages = ready.messages.drain(..);
-            for message in messages {
-                let mut client = match self.peer_mut(message.get_to()) {
-                    Some(ref peer) => peer.client.clone(),
-                    None => continue,
-                };
-                tokio::spawn(async move {
-                    for _ in 0..10 {
-                        let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                        match client.send_message(message_request).await {
-                            Ok(_) => break,
-                            Err(_) => delay_for(Duration::from_millis(100)).await,
-                        }
-                    }
-                });
-                debug!("NODE(leader): sent message");
-            }
-        }
+        if *ready.snapshot() != Snapshot::default() {
+            let s = ready.snapshot().clone();
+            if let Err(e) = self.mut_store().wl().apply_snapshot(s) {
+                error!(
+                    "apply snapshot fail: {:?}, need to retry or panic", e
+                );
 
-        if !raft::is_empty_snap(ready.snapshot()) {
-            info!("there is snapshot");
+                return;
+            }
         }
 
         if !ready.entries().is_empty() {
             let entries = ready.entries();
-            debug!("there are entries: {:?}", entries);
-            self.mut_store().wl().append(ready.entries()).unwrap();
+            self.mut_store().wl().append(entries).unwrap();
         }
 
         if let Some(hs) = ready.hs() {
@@ -251,32 +308,35 @@ impl<S: Store> RaftNode<S> {
             self.mut_store().wl().set_hardstate(hs.clone());
         }
 
-        if !self.is_leader() {
-            let messages = ready.messages.drain(..);
-            for message in messages {
-                let mut client = match self.peer_mut(message.get_to()) {
-                    Some(ref peer) => peer.client.clone(),
-                    None => {
-                        warn!("no client at {}", message.get_to());
-                        continue
-                    },
-                };
-                tokio::spawn(async move {
-                    for _ in 0..10 {
-                        let message_request = Request::new(raft_service::Message { inner: message.write_to_bytes().unwrap() });
-                        match client.send_message(message_request).await {
-                            Ok(_) => break,
-                            Err(_) => delay_for(Duration::from_millis(100)).await,
-                        }
-                    }
-                });
-                debug!("NODE: sent message");
-            }
+        for message in ready.messages.drain(..) {
+            let client = match self.peer_mut(message.get_to()) {
+                Some(ref peer) => peer.client.clone(),
+                None => continue,
+            };
+            let message_sender = MessageSender {
+                client_id: message.get_to(),
+                client: client.clone(),
+                chan: self.snd.clone(),
+                message: message.write_to_bytes().unwrap(),
+                timeout: Duration::from_millis(100),
+                max_retries: 5,
+            };
+            tokio::spawn(message_sender.send());
+        }
+
+        if !raft::is_empty_snap(ready.snapshot()) {
+            info!("there is snapshot");
+        }
+
+        if let Some(hs) = ready.hs() {
+            // Raft HardState changed, and we need to persist it.
+            self.mut_store().wl().set_hardstate(hs.clone());
         }
 
         if let Some(committed_entries) = ready.committed_entries.take() {
+
             let mut _last_apply_index = 0;
-            for entry in committed_entries {
+            for entry in &committed_entries {
                 // Mostly, you need to save the last apply index to resume applying
                 // after restart. Here we just ignore this because we use a Memory storage.
                 _last_apply_index = entry.get_index();
@@ -303,8 +363,6 @@ impl<S: Store> RaftNode<S> {
         change.merge_from_bytes(entry.get_data()).unwrap();
         let id = change.get_node_id();
 
-        println!("confchange: {:?}", change);
-
         match change.get_change_type() {
             ConfChangeType::AddNode => {
                 let addr: String = deserialize(change.get_context()).unwrap();
@@ -326,6 +384,7 @@ impl<S: Store> RaftNode<S> {
     }
 
     fn handle_normal( &mut self, entry: &Entry, senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
+        info!("applying proposal");
         let seq: u64 = deserialize(&entry.get_context()).unwrap(); 
         let proposal: S::Message = deserialize(&entry.get_data()).unwrap();
         self.store

@@ -5,7 +5,6 @@ service RaftService {
   rpc RequestId(Empty) returns (IdRequestReponse) {}
   rpc ChangeConfig(ConfigChange) returns (RaftResponse) {}
   rpc SendMessage(Message) returns (RaftResponse) {}
-  rpc Propose(Proposal) returns (RaftResponse) {}
 }
 
 enum ResultCode {

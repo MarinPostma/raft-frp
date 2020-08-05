@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use structopt::StructOpt;
 use actix_web::{get, web, App, HttpServer, Responder};
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use crate::message::Message;
 use crate::raft::MyMessage;
 
@@ -23,7 +24,15 @@ struct Options {
 }
 
 #[get("/put/{id}/{name}")]
-async fn put(_sender: web::Data<mpsc::Sender<Message<MyMessage>>>, _path: web::Path<(u64, String)>) -> impl Responder {
+async fn put(sender: web::Data<mpsc::Sender<Message<MyMessage>>>, path: web::Path<(u64, String)>) -> impl Responder {
+    let mut sender = sender.into_inner().as_ref().clone();
+    let (tx, rx) = oneshot::channel();
+    let _ = sender.send(Message::Propose {
+        proposal: MyMessage::Insert { key: path.0, value: path.1.clone() },
+        chan: tx,
+
+    }).await;
+    let _ = rx.await;
     "OK".to_string()
 }
 
@@ -32,6 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let options = Options::from_args();
     let store = Arc::new(RwLock::new(HashMap::new()));
+
+    // setup runtime for actix
+    let local = tokio::task::LocalSet::new();
+    let sys = actix_rt::System::run_in_tokio("server", &local);
 
     let (tx, rx) = mpsc::channel(100);
     match options.peer_addr {
@@ -54,6 +67,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             res2?;
         }
     }
+
+    sys.await?;
     Ok(())
 }
 
