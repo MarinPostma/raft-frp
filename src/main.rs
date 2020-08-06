@@ -8,7 +8,7 @@ use crate::raft::{Mailbox, Raft, RaftError, Store};
 use actix_web::{get, web, App, HttpServer, Responder};
 use log::info;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use structopt::StructOpt;
 use bincode::{serialize, deserialize};
 use serde::{Serialize, Deserialize};
@@ -26,10 +26,9 @@ struct Options {
 #[derive(Serialize, Deserialize)]
 pub enum Message {
     Insert { key: u64, value: String },
-    Get { key: u64 },
 }
 
-impl Store for HashMap<u64, String> {
+impl Store for Arc<RwLock<HashMap<u64, String>>> {
     type Error = RaftError;
 
     fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>, Self::Error> {
@@ -37,11 +36,7 @@ impl Store for HashMap<u64, String> {
         let message: Vec<u8> = match message {
             Message::Insert { key, value } => {
                 info!("inserting: ({}, {})", key, value);
-                self.insert(key, value.clone());
-                serialize(&value).unwrap()
-            }
-            Message::Get { ref key } => {
-                let value = self.get(key);
+                self.write().unwrap().insert(key, value.clone());
                 serialize(&value).unwrap()
             }
         };
@@ -49,19 +44,19 @@ impl Store for HashMap<u64, String> {
     }
 
     fn snapshot(&self) -> Vec<u8> {
-        serialize(self).unwrap()
+        serialize(&self.read().unwrap().clone()).unwrap()
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error> {
-        let new: Self = deserialize(snapshot).unwrap();
-        let _ = std::mem::replace(self, new);
+        let new: HashMap<u64, String> = deserialize(snapshot).unwrap();
+        let _ = std::mem::replace(self, Arc::new(RwLock::new(new)));
         Ok(())
     }
 }
 
 #[get("/put/{id}/{name}")]
 async fn put(
-    mailbox: web::Data<Arc<Mailbox>>,
+    data: web::Data<(Arc<Mailbox>, Arc<RwLock<HashMap<u64, String>>>)>,
     path: web::Path<(u64, String)>,
 ) -> impl Responder {
     let message = Message::Insert {
@@ -69,28 +64,26 @@ async fn put(
         value: path.1.clone(),
     };
     let message = serialize(&message).unwrap();
-    let result = mailbox.send(message).await.unwrap();
+    let result = data.0.send(message).await.unwrap();
     let result: String = deserialize(&result).unwrap();
     format!("{:?}", result)
 }
 
 #[get("/get/{id}")]
 async fn get(
-    mailbox: web::Data<Arc<Mailbox>>,
+    data: web::Data<(Arc<Mailbox>, Arc<RwLock<HashMap<u64, String>>>)>,
     path: web::Path<u64>,
 ) -> impl Responder {
-    let message = Message::Get { key: path.into_inner(), };
-    let message = serialize(&message).unwrap();
-    let result = mailbox.send(message).await.unwrap();
-    let result: Option<String> = deserialize(&result).unwrap();
-    format!("{:?}", result)
+    let db = data.1.read().unwrap();
+    let response = db.get(&path.into_inner());
+    format!("{:?}", response)
 }
 
 #[get("/leave")]
 async fn leave(
-    mailbox: web::Data<Arc<Mailbox>>,
+    data: web::Data<(Arc<Mailbox>, Arc<RwLock<HashMap<u64, String>>>)>,
 ) -> impl Responder {
-    mailbox.leave().await.unwrap();
+    data.0.leave().await.unwrap();
     "OK".to_string()
 }
 
@@ -99,36 +92,42 @@ async fn leave(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let options = Options::from_args();
-    let store = HashMap::new();
+    let store = Arc::new(RwLock::new(HashMap::new()));
 
     // setup runtime for actix
     let local = tokio::task::LocalSet::new();
     let _sys = actix_rt::System::run_in_tokio("server", &local);
 
-    match options.peer_addr {
+    let (raft_handle, mailbox) = match options.peer_addr {
         Some(addr) => {
-            Raft::new(options.raft_addr, store).join(&addr).await?;
+            let raft = Raft::new(options.raft_addr, store.clone());
+            let mailbox = Arc::new(raft.mailbox());
+            let handle = tokio::spawn(raft.join(addr));
+            (handle, mailbox)
         }
         None => {
-            let raft = Raft::new(options.raft_addr, store);
+            let raft = Raft::new(options.raft_addr, store.clone());
             let mailbox = Arc::new(raft.mailbox());
-            let raft = tokio::spawn(raft.lead());
-            let http_addr = options.web_server.clone().unwrap();
-            let _server = tokio::spawn(
-                HttpServer::new(move || {
-                    App::new()
-                        .app_data(web::Data::new(mailbox.clone()))
-                        .service(put)
-                        .service(get)
-                        .service(leave)
-                })
-                .bind(http_addr)
-                .unwrap()
-                .run()
-            );
-            let _ = tokio::try_join!(raft)?;
+            let handle =  tokio::spawn(raft.lead());
+            (handle, mailbox)
         }
+    };
+
+    if let Some(addr) = options.web_server {
+        let _server = tokio::spawn(
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new((mailbox.clone(), store.clone())))
+                    .service(put)
+                    .service(get)
+                    .service(leave)
+            })
+            .bind(addr)
+            .unwrap()
+            .run()
+        );
     }
 
+    let _ = tokio::try_join!(raft_handle)?;
     Ok(())
 }

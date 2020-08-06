@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::message::{Message, RaftResponse};
@@ -121,7 +120,7 @@ pub struct RaftNode<S: Store> {
     pub peers: HashMap<u64, Option<Peer>>,
     pub rcv: mpsc::Receiver<Message>,
     pub snd: mpsc::Sender<Message>,
-    store: Arc<RwLock<S>>,
+    store: S,
     should_quit: bool,
     seq: AtomicU64,
     last_snap_time: Instant,
@@ -131,7 +130,7 @@ impl<S: Store + 'static> RaftNode<S> {
     pub fn new_leader(
         rcv: mpsc::Receiver<Message>,
         snd: mpsc::Sender<Message>,
-        store: Arc<RwLock<S>>,
+        store: S,
     ) -> Self {
         let config = Config {
             id: 1,
@@ -169,7 +168,7 @@ impl<S: Store + 'static> RaftNode<S> {
         rcv: mpsc::Receiver<Message>,
         snd: mpsc::Sender<Message>,
         id: u64,
-        store: Arc<RwLock<S>>,
+        store: S,
     ) -> Self {
         let config = Config {
             id,
@@ -370,8 +369,6 @@ impl<S: Store + 'static> RaftNode<S> {
             let snapshot = ready.snapshot();
             info!("there is snapshot: current index: {}, snapshot index: {}", self.get_store().snapshot().unwrap().get_metadata().get_index(), snapshot.get_metadata().get_index());
             self.store
-                .write()
-                .unwrap()
                 .restore(snapshot.get_data())
                 .unwrap();
             self.mut_store()
@@ -441,7 +438,7 @@ impl<S: Store + 'static> RaftNode<S> {
 
         if let Ok(cs)  = self.apply_conf_change(&change) {
             let last_applied = self.raft.raft_log.applied;
-            let snapshot = self.store.read().unwrap().snapshot();
+            let snapshot = self.store.snapshot();
             {
                 let mut store = self.mut_store().wl();
                 store.set_conf_state(cs.clone(), None);
@@ -475,7 +472,7 @@ impl<S: Store + 'static> RaftNode<S> {
         senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>,
     ) {
         let seq: u64 = deserialize(&entry.get_context()).unwrap();
-        let data = self.store.write().unwrap().apply(entry.get_data()).unwrap();
+        let data = self.store.apply(entry.get_data()).unwrap();
         if let Some(sender) = senders.remove(&seq) {
             sender.send(RaftResponse::Response { data }).unwrap();
         }
@@ -484,7 +481,7 @@ impl<S: Store + 'static> RaftNode<S> {
             warn!("creating backup");
             self.last_snap_time = Instant::now();
             let last_applied = self.raft.raft_log.applied;
-            let snapshot = self.store.read().unwrap().snapshot();
+            let snapshot = self.store.snapshot();
             let mut store = self.mut_store().wl();
             store.compact(last_applied).unwrap();
             let _ = store.create_snapshot(last_applied, None, None, snapshot);

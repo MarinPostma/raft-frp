@@ -15,7 +15,6 @@ use bincode::serialize;
 use log::warn;
 
 use std::fmt;
-use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Leader {
@@ -106,8 +105,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
     /// cluster that is initialised that way
     pub async fn lead(self) -> Result<()> {
         let addr = self.addr.clone();
-        let store = Arc::new(RwLock::new(self.store));
-        let node = RaftNode::new_leader(self.rx, self.tx.clone(), store);
+        let node = RaftNode::new_leader(self.rx, self.tx.clone(), self.store);
         let server = RaftServer::new(self.tx, addr);
         let _server_handle = tokio::spawn(server.run());
         let node_handle = tokio::spawn(node.run());
@@ -119,7 +117,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
 
     /// Tries to join a new cluster at `addr`, getting an id from the leader, or finding it if
     /// `addr` is not the current leader of the cluster
-    pub async fn join(self, addr: &str) -> Result<()> {
+    pub async fn join(self, addr: String) -> Result<()> {
         // 1. try to discover the leader and obtain an id from it.
         let mut leader_addr = addr.to_string();
         let (leader_id, node_id): (u64, u64) = loop {
@@ -146,8 +144,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
 
         // 2. run server and node to prepare for joining
         let addr = self.addr.clone();
-        let store = Arc::new(RwLock::new(self.store));
-        let mut node = RaftNode::new_follower(self.rx, self.tx.clone(), node_id, store);
+        let mut node = RaftNode::new_follower(self.rx, self.tx.clone(), node_id, self.store);
         node.add_peer(&leader_addr, leader_id).await?;
         let mut client = node.peer_mut(leader_id).unwrap().clone();
         let server = RaftServer::new(self.tx, addr);
