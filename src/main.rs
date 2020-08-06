@@ -69,16 +69,21 @@ async fn put(
         value: path.1.clone(),
     };
     let message = serialize(&message).unwrap();
-    mailbox.send(message).await.unwrap();
-    "OK".to_string()
+    let result = mailbox.send(message).await.unwrap();
+    let result: String = deserialize(&result).unwrap();
+    format!("{:?}", result)
 }
 
 #[get("/get/{id}")]
 async fn get(
-    _mailbox: web::Data<Arc<Mailbox>>,
-    _path: web::Path<(u64, String)>,
+    mailbox: web::Data<Arc<Mailbox>>,
+    path: web::Path<u64>,
 ) -> impl Responder {
-    "ok".to_string()
+    let message = Message::Get { key: path.into_inner(), };
+    let message = serialize(&message).unwrap();
+    let result = mailbox.send(message).await.unwrap();
+    let result: Option<String> = deserialize(&result).unwrap();
+    format!("{:?}", result)
 }
 
 #[get("/leave")]
@@ -114,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     App::new()
                         .app_data(web::Data::new(mailbox.clone()))
                         .service(put)
+                        .service(get)
                         .service(leave)
                 })
                 .bind(http_addr)

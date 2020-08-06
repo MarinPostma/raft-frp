@@ -49,14 +49,14 @@ pub struct Mailbox(mpsc::Sender<Message>);
 impl Mailbox {
     /// sends a proposal message to commit to the node. This fails if the current node is not the
     /// leader
-    pub async fn send(&self, message: Vec<u8>) -> Result<(), RaftError> {
+    pub async fn send(&self, message: Vec<u8>) -> Result<Vec<u8>, RaftError> {
         let (tx, rx) = oneshot::channel();
         let proposal = Message::Propose { proposal: message, chan: tx };
         let mut sender = self.0.clone();
         match sender.send(proposal).await {
             Ok(_) => {
                 match rx.await {
-                    Ok(RaftResponse::Ok) => Ok(()),
+                    Ok(RaftResponse::Response { data }) => Ok(data),
                     _ => Err(RaftError),
                 }
             }

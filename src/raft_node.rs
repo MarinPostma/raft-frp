@@ -475,9 +475,9 @@ impl<S: Store + 'static> RaftNode<S> {
         senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>,
     ) {
         let seq: u64 = deserialize(&entry.get_context()).unwrap();
-        self.store.write().unwrap().apply(entry.get_data()).unwrap();
+        let data = self.store.write().unwrap().apply(entry.get_data()).unwrap();
         if let Some(sender) = senders.remove(&seq) {
-            sender.send(RaftResponse::Ok).unwrap();
+            sender.send(RaftResponse::Response { data }).unwrap();
         }
 
         if Instant::now() > self.last_snap_time + Duration::from_secs(15) {

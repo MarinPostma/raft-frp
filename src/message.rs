@@ -9,6 +9,7 @@ pub enum RaftResponse {
     WrongLeader { leader_id: u64, leader_addr: String },
     JoinSuccess { assigned_id: u64, peer_addrs: HashMap<u64, String> },
     Error,
+    Response { data: Vec<u8> },
     Ok,
 }
 
