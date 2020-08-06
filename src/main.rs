@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use structopt::StructOpt;
+use bincode::{serialize, deserialize};
 
 #[derive(Debug, StructOpt)]
 struct Options {
@@ -38,6 +39,16 @@ impl Store for HashMap<u64, String> {
                 self.insert(key, value);
             }
         }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Vec<u8> {
+        serialize(self).unwrap()
+    }
+
+    fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error> {
+        let new: Self = deserialize(snapshot).unwrap();
+        let _ = std::mem::replace(self, new);
         Ok(())
     }
 }

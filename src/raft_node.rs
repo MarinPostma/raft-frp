@@ -10,6 +10,7 @@ use crate::raft::Store;
 use crate::raft_service;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use bincode::{deserialize, serialize};
+use heed::PolyDatabase;
 use log::{debug, error, info, warn};
 use protobuf::Message as PMessage;
 use raft::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
@@ -31,6 +32,32 @@ where
     chan: mpsc::Sender<Message<M>>,
     max_retries: usize,
     timeout: Duration,
+}
+
+pub struct HeedStorage {
+    _database: PolyDatabase,
+    _state: RaftState,
+}
+
+impl Storage for HeedStorage {
+    fn initial_state(&self) -> raft::Result<RaftState> {
+        todo!()
+    }
+    fn entries(&self, _low: u64, _high: u64, _max_size: u64) -> raft::Result<Vec<Entry>> {
+        todo!()
+    }
+    fn term(&self, _idx: u64) -> raft::Result<u64> {
+        todo!()
+    }
+    fn first_index(&self) -> raft::Result<u64> {
+        todo!()
+    }
+    fn last_index(&self) -> raft::Result<u64> {
+        todo!()
+    }
+    fn snapshot(&self) -> raft::Result<Snapshot> {
+        todo!()
+    }
 }
 
 impl<M> MessageSender<M>
@@ -103,6 +130,7 @@ pub struct RaftNode<S: Store> {
     store: Arc<RwLock<S>>,
     should_quit: bool,
     seq: AtomicU64,
+    last_snap_time: Instant,
 }
 
 impl<S: Store + 'static> RaftNode<S> {
@@ -126,11 +154,10 @@ impl<S: Store + 'static> RaftNode<S> {
         config.validate().unwrap();
 
         let storage = MemStorage::default();
-
         let inner = RawNode::new(&config, storage, vec![]).unwrap();
-
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
+        let last_snap_time = Instant::now();
 
         RaftNode {
             inner,
@@ -140,6 +167,7 @@ impl<S: Store + 'static> RaftNode<S> {
             seq,
             snd,
             should_quit: false,
+            last_snap_time,
         }
     }
 
@@ -163,11 +191,12 @@ impl<S: Store + 'static> RaftNode<S> {
         config.validate().unwrap();
 
         let storage = MemStorage::default();
-
         let inner = RawNode::new(&config, storage, vec![]).unwrap();
-
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
+        let last_snap_time = Instant::now()
+            .checked_sub(Duration::from_secs(1000))
+            .unwrap();
 
         RaftNode {
             inner,
@@ -177,6 +206,7 @@ impl<S: Store + 'static> RaftNode<S> {
             seq,
             snd,
             should_quit: false,
+            last_snap_time,
         }
     }
 
@@ -317,15 +347,6 @@ impl<S: Store + 'static> RaftNode<S> {
 
         let mut ready = self.ready();
 
-        if *ready.snapshot() != Snapshot::default() {
-            let s = ready.snapshot().clone();
-            if let Err(e) = self.mut_store().wl().apply_snapshot(s) {
-                error!("apply snapshot fail: {:?}, need to retry or panic", e);
-
-                return;
-            }
-        }
-
         if !ready.entries().is_empty() {
             let entries = ready.entries();
             self.mut_store().wl().append(entries).unwrap();
@@ -353,7 +374,17 @@ impl<S: Store + 'static> RaftNode<S> {
         }
 
         if !raft::is_empty_snap(ready.snapshot()) {
-            info!("there is snapshot");
+            let snapshot = ready.snapshot();
+            info!("there is snapshot: current index: {}, snapshot index: {}", self.get_store().snapshot().unwrap().get_metadata().get_index(), snapshot.get_metadata().get_index());
+            self.store
+                .write()
+                .unwrap()
+                .restore(snapshot.get_data())
+                .unwrap();
+            self.mut_store()
+                .wl()
+                .apply_snapshot(snapshot.clone())
+                .unwrap();
         }
 
         if let Some(hs) = ready.hs() {
@@ -396,7 +427,9 @@ impl<S: Store + 'static> RaftNode<S> {
         change.merge_from_bytes(entry.get_data()).unwrap();
         let id = change.get_node_id();
 
-        match change.get_change_type() {
+        let change_type = change.get_change_type();
+
+        match change_type {
             ConfChangeType::AddNode => {
                 let addr: String = deserialize(change.get_context()).unwrap();
                 self.add_peer(&addr, id).await.unwrap();
@@ -413,11 +446,20 @@ impl<S: Store + 'static> RaftNode<S> {
             _ => unimplemented!(),
         }
 
-        let _ = self.apply_conf_change(&change);
+        if let Ok(cs)  = self.apply_conf_change(&change) {
+            let last_applied = self.raft.raft_log.applied;
+            let snapshot = self.store.read().unwrap().snapshot();
+            {
+                let mut store = self.mut_store().wl();
+                store.set_conf_state(cs.clone(), None);
+                store.compact(last_applied).unwrap();
+                let _ = store.create_snapshot(last_applied, Some(cs), Some(change), snapshot);
+            }
+        }
 
         match senders.remove(&seq) {
             Some(sender) => {
-                let response = match change.get_change_type() {
+                let response = match change_type {
                     ConfChangeType::AddNode => RaftResponse::JoinSuccess {
                         assigned_id: id,
                         peer_addrs: self.peer_addrs(),
@@ -425,7 +467,10 @@ impl<S: Store + 'static> RaftNode<S> {
                     ConfChangeType::RemoveNode => RaftResponse::Ok,
                     _ => unimplemented!(),
                 };
-                sender.send(response).unwrap();
+                match sender.send(response) {
+                    Err(_) => error!("error sending response"),
+                    _ => (),
+                }
             }
             None => (),
         }
@@ -436,12 +481,21 @@ impl<S: Store + 'static> RaftNode<S> {
         entry: &Entry,
         senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>,
     ) {
-        info!("applying proposal");
         let seq: u64 = deserialize(&entry.get_context()).unwrap();
         let proposal: S::Message = deserialize(&entry.get_data()).unwrap();
         self.store.write().unwrap().apply(proposal).unwrap();
         if let Some(sender) = senders.remove(&seq) {
             sender.send(RaftResponse::Ok).unwrap();
+        }
+
+        if Instant::now() > self.last_snap_time + Duration::from_secs(15) {
+            warn!("creating backup");
+            self.last_snap_time = Instant::now();
+            let last_applied = self.raft.raft_log.applied;
+            let snapshot = self.store.read().unwrap().snapshot();
+            let mut store = self.mut_store().wl();
+            store.compact(last_applied).unwrap();
+            let _ = store.create_snapshot(last_applied, None, None, snapshot);
         }
     }
 }

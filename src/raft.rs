@@ -28,6 +28,8 @@ pub trait Store: Send + Sync {
     type Error: std::error::Error;
 
     fn apply(&mut self, message: Self::Message) -> Result<(), Self::Error>;
+    fn snapshot(&self) -> Vec<u8>;
+    fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug)]
@@ -41,7 +43,7 @@ impl fmt::Display for RaftError {
 
 impl std::error::Error for RaftError {}
 
-/// A mailbox to send messages to a running raft node.
+/// A mailbox to send messages to a ruung raft node.
 #[derive(Clone)]
 pub struct Mailbox<M>(mpsc::Sender<Message<M>>) where M: Sync + Send;
 

@@ -846,6 +846,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "heed"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1c9d6f92f402a1452d658038a279d882c77fc5c1f50f29eb491b5fac537f479"
+dependencies = [
+ "byteorder",
+ "heed-traits",
+ "heed-types",
+ "libc",
+ "lmdb-rkv-sys",
+ "once_cell",
+ "page_size",
+ "url",
+ "zerocopy",
+]
+
+[[package]]
+name = "heed-traits"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b328f6260a7e51bdb0ca6b68e6ea27ee3d11fba5dee930896ee7ff6ad5fc072c"
+
+[[package]]
+name = "heed-types"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e100387815256b00dbb4f48db990f7fa03e9b88b4a89c2a1661b7d9d77b77c46"
+dependencies = [
+ "bincode",
+ "heed-traits",
+ "serde",
+ "serde_json",
+ "zerocopy",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1021,6 +1057,17 @@ name = "linked-hash-map"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8dd5a6d5999d9907cda8ed67bbd137d3af8085216c2ac62de5be860bd41f304a"
+
+[[package]]
+name = "lmdb-rkv-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b27470ac25167b3afdfb6af8fcd3bc1be67de50ffbdaf4073378cfded6ae24a5"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
 
 [[package]]
 name = "lock_api"
@@ -1205,6 +1252,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b631f7e854af39a1739f401cf34a8a013dfe09eac4fa4dba91e9768bd28168d"
 
 [[package]]
+name = "page_size"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebde548fbbf1ea81a99b128872779c437752fb99f217c45245e1a61dcd9edcd"
+dependencies = [
+ "libc",
+ "winapi 0.3.9",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1277,6 +1334,12 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d36492546b6af1463394d46f0c834346f31548646f6ba10849802c9c9a27ac33"
 
 [[package]]
 name = "ppv-lite86"
@@ -1446,6 +1509,7 @@ dependencies = [
  "env_logger",
  "futures",
  "futures-retry",
+ "heed",
  "log",
  "prost",
  "protobuf",
@@ -1455,6 +1519,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2353,4 +2418,25 @@ checksum = "d59cefebd0c892fa2dd6de581e937301d8552cb44489cdff035c6187cb63fa5e"
 dependencies = [
  "winapi 0.2.8",
  "winapi-build",
+]
+
+[[package]]
+name = "zerocopy"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6580539ad917b7c026220c4b3f2c08d52ce54d6ce0dc491e66002e35388fab46"
+dependencies = [
+ "byteorder",
+ "zerocopy-derive",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d498dbd1fd7beb83c86709ae1c33ca50942889473473d287d56ce4770a18edfb"
+dependencies = [
+ "proc-macro2 1.0.19",
+ "syn 1.0.35",
+ "synstructure",
 ]

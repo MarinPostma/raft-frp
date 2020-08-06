@@ -20,6 +20,8 @@ serde = { version = "1.0.114", features = ["derive"] }
 structopt = "0.3"
 tokio = { version = "0.2", features = ["full"] }
 tonic = "0.3.0"
+heed = "0.8.1"
+zerocopy = "0.3.0"
 
 [build-dependencies]
 tonic-build = "0.3.0"
