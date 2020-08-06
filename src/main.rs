@@ -35,8 +35,9 @@ impl Store for Arc<RwLock<HashMap<u64, String>>> {
         let message: Message = deserialize(message).unwrap();
         let message: Vec<u8> = match message {
             Message::Insert { key, value } => {
-                info!("inserting: ({}, {})", key, value);
-                self.write().unwrap().insert(key, value.clone());
+                let mut db = self.write().unwrap();
+                db.insert(key, value.clone());
+                info!("inserted: ({}, {})", key, value);
                 serialize(&value).unwrap()
             }
         };
@@ -49,7 +50,8 @@ impl Store for Arc<RwLock<HashMap<u64, String>>> {
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error> {
         let new: HashMap<u64, String> = deserialize(snapshot).unwrap();
-        let _ = std::mem::replace(self, Arc::new(RwLock::new(new)));
+        let mut db = self.write().unwrap();
+        let _ = std::mem::replace(&mut *db, new);
         Ok(())
     }
 }
