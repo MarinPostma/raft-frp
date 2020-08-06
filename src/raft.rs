@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use bincode::deserialize;
 use protobuf::Message as _;
 use raft::eraftpb::{ConfChange, ConfChangeType};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tonic::Request;
 use bincode::serialize;
@@ -23,11 +23,10 @@ pub struct Leader {
     addr: String,
 }
 
-pub trait Store: Send + Sync {
-    type Message: Serialize + DeserializeOwned + Send + Sync;
-    type Error: std::error::Error;
+pub trait Store {
+    type Error: Sync + Send + std::error::Error;
 
-    fn apply(&mut self, message: Self::Message) -> Result<(), Self::Error>;
+    fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>, Self::Error>;
     fn snapshot(&self) -> Vec<u8>;
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error>;
 }
@@ -45,12 +44,12 @@ impl std::error::Error for RaftError {}
 
 /// A mailbox to send messages to a ruung raft node.
 #[derive(Clone)]
-pub struct Mailbox<M>(mpsc::Sender<Message<M>>) where M: Sync + Send;
+pub struct Mailbox(mpsc::Sender<Message>);
 
-impl<M: Sync + Send> Mailbox<M> {
+impl Mailbox {
     /// sends a proposal message to commit to the node. This fails if the current node is not the
     /// leader
-    pub async fn send(&self, message: M) -> Result<(), RaftError> {
+    pub async fn send(&self, message: Vec<u8>) -> Result<(), RaftError> {
         let (tx, rx) = oneshot::channel();
         let proposal = Message::Propose { proposal: message, chan: tx };
         let mut sender = self.0.clone();
@@ -86,12 +85,12 @@ impl<M: Sync + Send> Mailbox<M> {
 
 pub struct Raft<S: Store + 'static> {
     store: S,
-    tx: mpsc::Sender<Message<S::Message>>,
-    rx: mpsc::Receiver<Message<S::Message>>,
+    tx: mpsc::Sender<Message>,
+    rx: mpsc::Receiver<Message>,
     addr: String,
 }
 
-impl<S: Store + 'static> Raft<S> {
+impl<S: Store + Send + Sync + 'static> Raft<S> {
     /// creates a new node with the given address and store.
     pub fn new(addr: String, store: S) -> Self {
         let (tx, rx) = mpsc::channel(100);
@@ -99,7 +98,7 @@ impl<S: Store + 'static> Raft<S> {
     }
 
     /// gets the node's `Mailbox`.
-    pub fn mailbox(&self) -> Mailbox<S::Message> {
+    pub fn mailbox(&self) -> Mailbox {
         Mailbox(self.tx.clone())
     }
 

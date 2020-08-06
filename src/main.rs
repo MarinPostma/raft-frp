@@ -7,11 +7,11 @@ mod raft_service;
 use crate::raft::{Mailbox, Raft, RaftError, Store};
 use actix_web::{get, web, App, HttpServer, Responder};
 use log::info;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use structopt::StructOpt;
 use bincode::{serialize, deserialize};
+use serde::{Serialize, Deserialize};
 
 #[derive(Debug, StructOpt)]
 struct Options {
@@ -26,20 +26,26 @@ struct Options {
 #[derive(Serialize, Deserialize)]
 pub enum Message {
     Insert { key: u64, value: String },
+    Get { key: u64 },
 }
 
 impl Store for HashMap<u64, String> {
-    type Message = Message;
     type Error = RaftError;
 
-    fn apply(&mut self, message: Self::Message) -> Result<(), Self::Error> {
-        match message {
+    fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>, Self::Error> {
+        let message: Message = deserialize(message).unwrap();
+        let message: Vec<u8> = match message {
             Message::Insert { key, value } => {
                 info!("inserting: ({}, {})", key, value);
-                self.insert(key, value);
+                self.insert(key, value.clone());
+                serialize(&value).unwrap()
             }
-        }
-        Ok(())
+            Message::Get { ref key } => {
+                let value = self.get(key);
+                serialize(&value).unwrap()
+            }
+        };
+        Ok(message)
     }
 
     fn snapshot(&self) -> Vec<u8> {
@@ -55,20 +61,29 @@ impl Store for HashMap<u64, String> {
 
 #[get("/put/{id}/{name}")]
 async fn put(
-    mailbox: web::Data<Arc<Mailbox<Message>>>,
+    mailbox: web::Data<Arc<Mailbox>>,
     path: web::Path<(u64, String)>,
 ) -> impl Responder {
     let message = Message::Insert {
         key: path.0,
         value: path.1.clone(),
     };
+    let message = serialize(&message).unwrap();
     mailbox.send(message).await.unwrap();
     "OK".to_string()
 }
 
+#[get("/get/{id}")]
+async fn get(
+    _mailbox: web::Data<Arc<Mailbox>>,
+    _path: web::Path<(u64, String)>,
+) -> impl Responder {
+    "ok".to_string()
+}
+
 #[get("/leave")]
 async fn leave(
-    mailbox: web::Data<Arc<Mailbox<Message>>>,
+    mailbox: web::Data<Arc<Mailbox>>,
 ) -> impl Responder {
     mailbox.leave().await.unwrap();
     "OK".to_string()

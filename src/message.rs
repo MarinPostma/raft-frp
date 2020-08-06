@@ -13,10 +13,9 @@ pub enum RaftResponse {
 }
 
 #[allow(dead_code)]
-pub enum Message<P>
-where P: Sync + Send {
+pub enum Message {
     Propose {
-        proposal: P,
+        proposal: Vec<u8>,
         chan: Sender<RaftResponse>,
     },
     ConfigChange {

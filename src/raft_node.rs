@@ -22,14 +22,11 @@ use tokio::time::timeout;
 use tonic::transport::channel::Channel;
 use tonic::Request;
 
-struct MessageSender<M>
-where
-    M: Send + Sync + 'static,
-{
+struct MessageSender {
     message: Vec<u8>,
     client: RaftServiceClient<tonic::transport::channel::Channel>,
     client_id: u64,
-    chan: mpsc::Sender<Message<M>>,
+    chan: mpsc::Sender<Message>,
     max_retries: usize,
     timeout: Duration,
 }
@@ -60,10 +57,7 @@ impl Storage for HeedStorage {
     }
 }
 
-impl<M> MessageSender<M>
-where
-    M: Send + Sync + 'static,
-{
+impl MessageSender {
     async fn send(mut self) {
         let mut current_retry = 0usize;
 
@@ -125,8 +119,8 @@ pub struct RaftNode<S: Store> {
     inner: RawNode<MemStorage>,
     // the peer is optional, because an id can be reserved and later populated
     pub peers: HashMap<u64, Option<Peer>>,
-    pub rcv: mpsc::Receiver<Message<S::Message>>,
-    pub snd: mpsc::Sender<Message<S::Message>>,
+    pub rcv: mpsc::Receiver<Message>,
+    pub snd: mpsc::Sender<Message>,
     store: Arc<RwLock<S>>,
     should_quit: bool,
     seq: AtomicU64,
@@ -135,8 +129,8 @@ pub struct RaftNode<S: Store> {
 
 impl<S: Store + 'static> RaftNode<S> {
     pub fn new_leader(
-        rcv: mpsc::Receiver<Message<S::Message>>,
-        snd: mpsc::Sender<Message<S::Message>>,
+        rcv: mpsc::Receiver<Message>,
+        snd: mpsc::Sender<Message>,
         store: Arc<RwLock<S>>,
     ) -> Self {
         let config = Config {
@@ -172,8 +166,8 @@ impl<S: Store + 'static> RaftNode<S> {
     }
 
     pub fn new_follower(
-        rcv: mpsc::Receiver<Message<S::Message>>,
-        snd: mpsc::Sender<Message<S::Message>>,
+        rcv: mpsc::Receiver<Message>,
+        snd: mpsc::Sender<Message>,
         id: u64,
         store: Arc<RwLock<S>>,
     ) -> Self {
@@ -310,7 +304,6 @@ impl<S: Store + 'static> RaftNode<S> {
                         info!("leader received proposal");
                         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
                         client_send.insert(seq, chan);
-                        let proposal = serialize(&proposal).unwrap();
                         let seq = serialize(&seq).unwrap();
                         self.propose(seq, proposal).unwrap();
                     }
@@ -482,8 +475,7 @@ impl<S: Store + 'static> RaftNode<S> {
         senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>,
     ) {
         let seq: u64 = deserialize(&entry.get_context()).unwrap();
-        let proposal: S::Message = deserialize(&entry.get_data()).unwrap();
-        self.store.write().unwrap().apply(proposal).unwrap();
+        self.store.write().unwrap().apply(entry.get_data()).unwrap();
         if let Some(sender) = senders.remove(&seq) {
             sender.send(RaftResponse::Ok).unwrap();
         }

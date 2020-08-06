@@ -15,13 +15,13 @@ use tonic::{Status, Response, Request};
 use bincode::serialize;
 use protobuf::Message as _;
 
-pub struct RaftServer<M: Send + Sync + 'static> {
-    snd: mpsc::Sender<Message<M>>,
+pub struct RaftServer {
+    snd: mpsc::Sender<Message>,
     addr: SocketAddr,
 }
 
-impl<M: Send + Sync> RaftServer<M> {
-    pub fn new<A: ToSocketAddrs>(snd: mpsc::Sender<Message<M>>, addr: A) -> Self {
+impl RaftServer {
+    pub fn new<A: ToSocketAddrs>(snd: mpsc::Sender<Message>, addr: A) -> Self {
         let addr = addr.to_socket_addrs().unwrap().next().unwrap();
         RaftServer { snd, addr }
     }
@@ -39,7 +39,7 @@ impl<M: Send + Sync> RaftServer<M> {
 }
 
 #[tonic::async_trait]
-impl<M: Send + Sync> RaftService for RaftServer<M> {
+impl RaftService for RaftServer {
     async fn request_id(&self, _: Request<Empty>) -> Result<Response<raft_service::IdRequestReponse>, Status> {
         let mut sender = self.snd.clone();
         let (tx, rx) = oneshot::channel();
