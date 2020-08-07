@@ -12,9 +12,9 @@ use bincode::{deserialize, serialize};
 use heed::PolyDatabase;
 use log::{debug, error, info, warn};
 use protobuf::Message as PMessage;
-use raft::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
-use raft::prelude::*;
-use raft::{raw_node::RawNode, storage::MemStorage, Config};
+use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
+use raftrs::prelude::*;
+use raftrs::{raw_node::RawNode, storage::MemStorage, Config};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -36,22 +36,22 @@ pub struct HeedStorage {
 }
 
 impl Storage for HeedStorage {
-    fn initial_state(&self) -> raft::Result<RaftState> {
+    fn initial_state(&self) -> raftrs::Result<RaftState> {
         todo!()
     }
-    fn entries(&self, _low: u64, _high: u64, _max_size: u64) -> raft::Result<Vec<Entry>> {
+    fn entries(&self, _low: u64, _high: u64, _max_size: u64) -> raftrs::Result<Vec<Entry>> {
         todo!()
     }
-    fn term(&self, _idx: u64) -> raft::Result<u64> {
+    fn term(&self, _idx: u64) -> raftrs::Result<u64> {
         todo!()
     }
-    fn first_index(&self) -> raft::Result<u64> {
+    fn first_index(&self) -> raftrs::Result<u64> {
         todo!()
     }
-    fn last_index(&self) -> raft::Result<u64> {
+    fn last_index(&self) -> raftrs::Result<u64> {
         todo!()
     }
-    fn snapshot(&self) -> raft::Result<Snapshot> {
+    fn snapshot(&self) -> raftrs::Result<Snapshot> {
         todo!()
     }
 }
@@ -365,7 +365,7 @@ impl<S: Store + 'static> RaftNode<S> {
             tokio::spawn(message_sender.send());
         }
 
-        if !raft::is_empty_snap(ready.snapshot()) {
+        if !raftrs::is_empty_snap(ready.snapshot()) {
             let snapshot = ready.snapshot();
             info!("there is snapshot: current index: {}, snapshot index: {}", self.get_store().snapshot().unwrap().get_metadata().get_index(), snapshot.get_metadata().get_index());
             self.store

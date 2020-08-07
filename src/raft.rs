@@ -4,10 +4,12 @@ use crate::raft_server::RaftServer;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use crate::raft_service::ConfigChange;
 use crate::raft_service::{Empty, ResultCode};
+use crate::RaftError;
+
 use anyhow::{anyhow, Result};
 use bincode::deserialize;
 use protobuf::Message as _;
-use raft::eraftpb::{ConfChange, ConfChangeType};
+use raftrs::eraftpb::{ConfChange, ConfChangeType};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tonic::Request;
@@ -29,9 +31,6 @@ pub trait Store {
     fn snapshot(&self) -> Vec<u8>;
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error>;
 }
-
-#[derive(Debug)]
-pub struct RaftError;
 
 impl fmt::Display for RaftError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -6,7 +6,7 @@ use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
 use crate::raft_service::{self, ConfigChange, Empty };
 
 use log::{error, info};
-use raft::eraftpb::{ConfChange, Message as RaftMessage};
+use raftrs::eraftpb::{ConfChange, Message as RaftMessage};
 use tokio::sync::oneshot;
 use tokio::sync::mpsc;
 use tokio::time::timeout;

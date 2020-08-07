@@ -1,10 +1,4 @@
-mod message;
-mod raft;
-mod raft_node;
-mod raft_server;
-mod raft_service;
-
-use crate::raft::{Mailbox, Raft, RaftError, Store};
+use raft::{Mailbox, Raft, RaftError, Store};
 use actix_web::{get, web, App, HttpServer, Responder};
 use log::info;
 use std::collections::HashMap;
@@ -28,14 +22,22 @@ pub enum Message {
     Insert { key: u64, value: String },
 }
 
-impl Store for Arc<RwLock<HashMap<u64, String>>> {
+#[derive(Clone)]
+struct HashStore(Arc<RwLock<HashMap<u64, String>>>);
+
+impl HashStore {
+    fn new() -> Self { Self(Arc::new(RwLock::new(HashMap::new()))) }
+}
+
+impl Store for  HashStore {
     type Error = RaftError;
 
     fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>, Self::Error> {
         let message: Message = deserialize(message).unwrap();
         let message: Vec<u8> = match message {
             Message::Insert { key, value } => {
-                let mut db = self.write().unwrap();
+
+                let mut db = self.0.write().unwrap();
                 db.insert(key, value.clone());
                 info!("inserted: ({}, {})", key, value);
                 serialize(&value).unwrap()
@@ -45,12 +47,12 @@ impl Store for Arc<RwLock<HashMap<u64, String>>> {
     }
 
     fn snapshot(&self) -> Vec<u8> {
-        serialize(&self.read().unwrap().clone()).unwrap()
+        serialize(&self.0.read().unwrap().clone()).unwrap()
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error> {
         let new: HashMap<u64, String> = deserialize(snapshot).unwrap();
-        let mut db = self.write().unwrap();
+        let mut db = self.0.write().unwrap();
         let _ = std::mem::replace(&mut *db, new);
         Ok(())
     }
@@ -94,7 +96,7 @@ async fn leave(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let options = Options::from_args();
-    let store = Arc::new(RwLock::new(HashMap::new()));
+    let store = HashStore::new();
 
     // setup runtime for actix
     let local = tokio::task::LocalSet::new();
