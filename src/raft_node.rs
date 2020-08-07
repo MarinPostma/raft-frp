@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 use crate::message::{Message, RaftResponse};
 use crate::raft::Store;
 
+use crate::storage::HeedStorage;
 use crate::raft_service;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use bincode::{deserialize, serialize};
-use heed::PolyDatabase;
 use log::{debug, error, info, warn};
 use protobuf::Message as PMessage;
 use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
@@ -28,32 +28,6 @@ struct MessageSender {
     chan: mpsc::Sender<Message>,
     max_retries: usize,
     timeout: Duration,
-}
-
-pub struct HeedStorage {
-    _database: PolyDatabase,
-    _state: RaftState,
-}
-
-impl Storage for HeedStorage {
-    fn initial_state(&self) -> raftrs::Result<RaftState> {
-        todo!()
-    }
-    fn entries(&self, _low: u64, _high: u64, _max_size: u64) -> raftrs::Result<Vec<Entry>> {
-        todo!()
-    }
-    fn term(&self, _idx: u64) -> raftrs::Result<u64> {
-        todo!()
-    }
-    fn first_index(&self) -> raftrs::Result<u64> {
-        todo!()
-    }
-    fn last_index(&self) -> raftrs::Result<u64> {
-        todo!()
-    }
-    fn snapshot(&self) -> raftrs::Result<Snapshot> {
-        todo!()
-    }
 }
 
 impl MessageSender {
@@ -115,7 +89,7 @@ impl Peer {
 }
 
 pub struct RaftNode<S: Store> {
-    inner: RawNode<MemStorage>,
+    inner: RawNode<HeedStorage>,
     // the peer is optional, because an id can be reserved and later populated
     pub peers: HashMap<u64, Option<Peer>>,
     pub rcv: mpsc::Receiver<Message>,
@@ -127,11 +101,7 @@ pub struct RaftNode<S: Store> {
 }
 
 impl<S: Store + 'static> RaftNode<S> {
-    pub fn new_leader(
-        rcv: mpsc::Receiver<Message>,
-        snd: mpsc::Sender<Message>,
-        store: S,
-    ) -> Self {
+    pub fn new_leader(rcv: mpsc::Receiver<Message>, snd: mpsc::Sender<Message>, store: S) -> Self {
         let config = Config {
             id: 1,
             peers: vec![1],
@@ -365,12 +335,18 @@ impl<S: Store + 'static> RaftNode<S> {
             tokio::spawn(message_sender.send());
         }
 
-        if !raftrs::is_empty_snap(ready.snapshot()) {
+        if !ready.snapshot().is_empty() {
             let snapshot = ready.snapshot();
-            info!("there is snapshot: current index: {}, snapshot index: {}", self.get_store().snapshot().unwrap().get_metadata().get_index(), snapshot.get_metadata().get_index());
-            self.store
-                .restore(snapshot.get_data())
-                .unwrap();
+            info!(
+                "there is snapshot: current index: {}, snapshot index: {}",
+                self.get_store()
+                    .snapshot()
+                    .unwrap()
+                    .get_metadata()
+                    .get_index(),
+                snapshot.get_metadata().get_index()
+            );
+            self.store.restore(snapshot.get_data()).unwrap();
             self.mut_store()
                 .wl()
                 .apply_snapshot(snapshot.clone())
@@ -436,7 +412,7 @@ impl<S: Store + 'static> RaftNode<S> {
             _ => unimplemented!(),
         }
 
-        if let Ok(cs)  = self.apply_conf_change(&change) {
+        if let Ok(cs) = self.apply_conf_change(&change) {
             let last_applied = self.raft.raft_log.applied;
             let snapshot = self.store.snapshot();
             {
