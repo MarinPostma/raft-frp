@@ -318,7 +318,7 @@ impl<S: Store + 'static> RaftNode<S> {
         if let Some(hs) = ready.hs() {
             // Raft HardState changed, and we need to persist it.
             let mut store = self.mut_store().wl();
-            store.set_hard_state(hs.clone()).unwrap();
+            store.set_hard_state(hs).unwrap();
         }
 
         for message in ready.messages.drain(..) {
@@ -347,7 +347,7 @@ impl<S: Store + 'static> RaftNode<S> {
         if let Some(hs) = ready.hs() {
             // Raft HardState changed, and we need to persist it.
             let mut store = self.mut_store().wl();
-            store.set_hard_state(hs.clone()).unwrap();
+            store.set_hard_state(hs).unwrap();
         }
 
         if let Some(committed_entries) = ready.committed_entries.take() {
@@ -409,9 +409,9 @@ impl<S: Store + 'static> RaftNode<S> {
             let snapshot = self.store.snapshot();
             {
                 let mut store = self.mut_store().wl();
-                store.set_conf_state(cs.clone()).unwrap();
+                store.set_conf_state(&cs).unwrap();
                 store.compact(last_applied).unwrap();
-                let _ = store.create_snapshot(last_applied, snapshot);
+                let _ = store.create_snapshot(snapshot);
             }
         }
 
@@ -452,7 +452,7 @@ impl<S: Store + 'static> RaftNode<S> {
             let snapshot = self.store.snapshot();
             let mut store = self.mut_store().wl();
             store.compact(last_applied).unwrap();
-            let _ = store.create_snapshot(last_applied, snapshot);
+            let _ = store.create_snapshot(snapshot);
         }
     }
 }
