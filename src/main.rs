@@ -29,7 +29,7 @@ impl HashStore {
     fn new() -> Self { Self(Arc::new(RwLock::new(HashMap::new()))) }
 }
 
-impl Store for  HashStore {
+impl Store for HashStore {
     type Error = RaftError;
 
     fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>, Self::Error> {

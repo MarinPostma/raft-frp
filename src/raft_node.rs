@@ -13,8 +13,7 @@ use bincode::{deserialize, serialize};
 use log::{debug, error, info, warn};
 use protobuf::Message as PMessage;
 use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
-use raftrs::prelude::*;
-use raftrs::{raw_node::RawNode, storage::MemStorage, Config};
+use raftrs::{raw_node::RawNode, Config};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -101,23 +100,25 @@ pub struct RaftNode<S: Store> {
 }
 
 impl<S: Store + 'static> RaftNode<S> {
-    pub fn new_leader(rcv: mpsc::Receiver<Message>, snd: mpsc::Sender<Message>, store: S) -> Self {
+    pub fn new_leader(
+        rcv: mpsc::Receiver<Message>,
+        snd: mpsc::Sender<Message>,
+        store: S,
+        ) -> Self {
         let config = Config {
             id: 1,
-            peers: vec![1],
             election_tick: 10,
             // Heartbeat tick is for how long the leader needs to send
             // a heartbeat to keep alive.
             heartbeat_tick: 3,
             // Just for log
-            tag: format!("[{}]", 1),
             ..Default::default()
         };
 
         config.validate().unwrap();
 
-        let storage = MemStorage::default();
-        let inner = RawNode::new(&config, storage, vec![]).unwrap();
+        let storage = HeedStorage::create(".").unwrap();
+        let inner = RawNode::new(&config, storage).unwrap();
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
         let last_snap_time = Instant::now();
@@ -147,14 +148,13 @@ impl<S: Store + 'static> RaftNode<S> {
             // a heartbeat to keep alive.
             heartbeat_tick: 3,
             // Just for log
-            tag: format!("[{}]", id),
             ..Default::default()
         };
 
         config.validate().unwrap();
 
-        let storage = MemStorage::default();
-        let inner = RawNode::new(&config, storage, vec![]).unwrap();
+        let storage = HeedStorage::create(".").unwrap();
+        let inner = RawNode::new(&config, storage).unwrap();
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
         let last_snap_time = Instant::now()
@@ -311,12 +311,14 @@ impl<S: Store + 'static> RaftNode<S> {
 
         if !ready.entries().is_empty() {
             let entries = ready.entries();
-            self.mut_store().wl().append(entries).unwrap();
+            let mut store = self.mut_store().wl();
+            store.append(entries).unwrap();
         }
 
         if let Some(hs) = ready.hs() {
             // Raft HardState changed, and we need to persist it.
-            self.mut_store().wl().set_hardstate(hs.clone());
+            let mut store = self.mut_store().wl();
+            store.set_hard_state(hs.clone()).unwrap();
         }
 
         for message in ready.messages.drain(..) {
@@ -335,27 +337,17 @@ impl<S: Store + 'static> RaftNode<S> {
             tokio::spawn(message_sender.send());
         }
 
-        if !ready.snapshot().is_empty() {
+        if !raftrs::raw_node::is_empty_snap(ready.snapshot()) {
             let snapshot = ready.snapshot();
-            info!(
-                "there is snapshot: current index: {}, snapshot index: {}",
-                self.get_store()
-                    .snapshot()
-                    .unwrap()
-                    .get_metadata()
-                    .get_index(),
-                snapshot.get_metadata().get_index()
-            );
             self.store.restore(snapshot.get_data()).unwrap();
-            self.mut_store()
-                .wl()
-                .apply_snapshot(snapshot.clone())
-                .unwrap();
+            let mut store = self.mut_store().wl();
+            store.apply_snapshot(snapshot.clone()).unwrap();
         }
 
         if let Some(hs) = ready.hs() {
             // Raft HardState changed, and we need to persist it.
-            self.mut_store().wl().set_hardstate(hs.clone());
+            let mut store = self.mut_store().wl();
+            store.set_hard_state(hs.clone()).unwrap();
         }
 
         if let Some(committed_entries) = ready.committed_entries.take() {
@@ -417,9 +409,9 @@ impl<S: Store + 'static> RaftNode<S> {
             let snapshot = self.store.snapshot();
             {
                 let mut store = self.mut_store().wl();
-                store.set_conf_state(cs.clone(), None);
+                store.set_conf_state(cs.clone()).unwrap();
                 store.compact(last_applied).unwrap();
-                let _ = store.create_snapshot(last_applied, Some(cs), Some(change), snapshot);
+                let _ = store.create_snapshot(last_applied, snapshot);
             }
         }
 
@@ -460,13 +452,13 @@ impl<S: Store + 'static> RaftNode<S> {
             let snapshot = self.store.snapshot();
             let mut store = self.mut_store().wl();
             store.compact(last_applied).unwrap();
-            let _ = store.create_snapshot(last_applied, None, None, snapshot);
+            let _ = store.create_snapshot(last_applied, snapshot);
         }
     }
 }
 
 impl<S: Store> Deref for RaftNode<S> {
-    type Target = RawNode<MemStorage>;
+    type Target = RawNode<HeedStorage>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner

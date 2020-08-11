@@ -92,7 +92,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
     /// creates a new node with the given address and store.
     pub fn new(addr: String, store: S) -> Self {
         let (tx, rx) = mpsc::channel(100);
-        Self { store, tx, rx, addr }
+        Self { store, tx, rx, addr}
     }
 
     /// gets the node's `Mailbox`.
