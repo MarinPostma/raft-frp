@@ -106,18 +106,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local = tokio::task::LocalSet::new();
     let _sys = actix_rt::System::run_in_tokio("server", &local);
 
+    let raft = Raft::new(options.raft_addr, store.clone());
+    let mailbox = Arc::new(raft.mailbox());
     let (raft_handle, mailbox) = match options.peer_addr {
         Some(addr) => {
             info!("running in follower mode");
-            let raft = Raft::new(options.raft_addr, store.clone());
-            let mailbox = Arc::new(raft.mailbox());
             let handle = tokio::spawn(raft.join(addr));
             (handle, mailbox)
         }
         None => {
             info!("running in leader mode");
-            let raft = Raft::new(options.raft_addr, store.clone());
-            let mailbox = Arc::new(raft.mailbox());
             let handle =  tokio::spawn(raft.lead());
             (handle, mailbox)
         }
