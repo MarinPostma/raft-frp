@@ -7,6 +7,7 @@ use raftrs::prelude::*;
 use heed_traits::{BytesDecode, BytesEncode};
 use std::borrow::Cow;
 use protobuf::Message;
+use log::{warn, info};
 
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Sync + Send>>;
@@ -90,62 +91,59 @@ impl<'a> BytesDecode<'a> for HeedConfState {
     }
 }
 
-#[allow(dead_code)]
 pub struct HeedStorageCore {
     env: Env,
     entries_db: Database<OwnedType<u64>, HeedEntry>,
     metadata_db: PolyDatabase,
-    snapshot: Option<Snapshot>,
 }
 
 impl HeedStorageCore {
-    pub fn create(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn create(path: impl AsRef<Path>, id: u64) -> Result<Self> {
 
         let path = path.as_ref();
+        let name = format!("raft-{}.mdb", id);
 
-        fs::create_dir_all(Path::new(&path).join("raft.mdb"))?;
+        fs::create_dir_all(Path::new(&path).join(&name))?;
 
-        let path = path.join("raft.mdb");
+        let path = path.join(&name);
 
         let env = heed::EnvOpenOptions::new()
-            .map_size(10 * 1096 * 1096)
+            .map_size(100 * 4096)
             .max_dbs(3000)
             .open(path)?;
-        let entries_db: Database<OwnedType<u64>, HeedEntry> = env.create_database(None)?;
-        let metadata_db = env.create_poly_database(None)?;
+        let entries_db: Database<OwnedType<u64>, HeedEntry> = env.create_database(Some("entries"))?;
+        println!("hereeee");
+        let metadata_db = env.create_poly_database(Some("meta"))?;
 
         let hard_state = HardState::new();
         let conf_state = ConfState::new();
-
-        let mut wtxn = env.write_txn()?;
-        metadata_db.put::<_, Str, HeedHardState>(&mut wtxn, HARD_STATE_KEY, &hard_state)?;
-        metadata_db.put::<_, Str, HeedConfState>(&mut wtxn, CONF_STATE_KEY, &conf_state)?;
-        metadata_db.put::<_, Str, OwnedType<u64>>(&mut wtxn, LAST_INDEX_KEY, &0)?;
-
-        wtxn.commit()?;
 
         let mut storage = Self {
             metadata_db,
             entries_db,
             env,
-            snapshot: None,
         };
 
+        storage.set_hard_state(&hard_state)?;
+        storage.set_conf_state(&conf_state)?;
         storage.append(&[Entry::new()])?;
 
         Ok(storage)
     }
 
     pub fn append(&mut self, entries: &[Entry]) -> Result<()> {
+        info!("adding entries");
         let mut writer = self.env.write_txn()?;
         let mut last_index = self.last_index(&writer)?;
         for entry in entries {
-            assert_eq!(entry.get_index(), last_index + 1);
+            //assert_eq!(entry.get_index(), last_index + 1);
             last_index += 1;
             self.entries_db.put(&mut writer, &last_index, entry)?;
         }
         self.set_last_index(&mut writer, last_index)?;
         writer.commit()?;
+        let reader = self.env.read_txn()?;
+        self.last_index(&reader)?;
         Ok(())
     }
 
@@ -175,9 +173,25 @@ impl HeedStorageCore {
         Ok(conf_state.expect("there should be a conf state"))
     }
 
-    /// attempts to created a snapshot with the lastest commited entry
-    pub fn create_snapshot(&mut self, _data: Vec<u8>) -> Result<()> {
-        todo!()
+    /// attempts to create a snapshot with the lastest commited entry
+    pub fn create_snapshot(&mut self, data: Vec<u8>) -> Result<()> {
+        let hard_state = self.hard_state()?;
+        let conf_state = self.conf_state()?;
+        let mut snapshot = Snapshot::new();
+        snapshot.set_data(data);
+        let meta = snapshot.mut_metadata();
+        meta.set_conf_state(conf_state);
+        meta.index = hard_state.commit;
+        meta.term = hard_state.term;
+        self.set_snapshot(&snapshot)?;
+        Ok(())
+    }
+
+    fn set_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
+        let mut writer = self.env.write_txn()?;
+        self.metadata_db.put::<_, Str, HeedSnapshot>(&mut writer, SNAPSHOT_KEY, snapshot)?;
+        writer.commit()?;
+        Ok(())
     }
 
     pub fn snapshot(&self) -> Result<Option<Snapshot>> {
@@ -203,9 +217,9 @@ impl HeedStorageCore {
 
     pub fn compact(&mut self, index: u64) -> Result<()> {
         let mut writer = self.env.write_txn()?;
-        let last_index = self.last_index(&writer)?;
+        //let last_index = self.last_index(&writer)?;
         // there should always be at least one entry in the log
-        assert!(last_index > index + 1);
+        //assert!(last_index > index + 1);
         self.entries_db.delete_range(&mut writer, &(..index))?;
         writer.commit()?;
         Ok(())
@@ -214,11 +228,13 @@ impl HeedStorageCore {
     fn last_index(&self, r: &heed::RoTxn) -> Result<u64> {
         let last_index = self
             .metadata_db.get::<_, Str, OwnedType<u64>>(r, LAST_INDEX_KEY)?
-            .expect("Last index should always exist.");
+            .unwrap_or(0);
+        println!("last index requested: {}", last_index);
         Ok(last_index)
     }
 
     fn set_last_index(&self, w: &mut heed::RwTxn, index: u64) -> Result<()> {
+        println!("setting last index: {}", index);
         self.metadata_db.put::<_, Str, OwnedType<u64>>(w, LAST_INDEX_KEY, &index)?;
         Ok(())
     }
@@ -235,6 +251,7 @@ impl HeedStorageCore {
     }
 
     fn entries(&self, low: u64, high: u64, max_size: impl Into<Option<u64>>) -> Result<Vec<Entry>> {
+        info!("entries requested: {}->{}", low, high);
         let reader = self.env.read_txn()?;
         let iter = self.entries_db.range(&reader, &(low..high))?;
         let max_size: Option<u64> = max_size.into();
@@ -265,8 +282,8 @@ impl HeedStorageCore {
 pub struct HeedStorage(Arc<RwLock<HeedStorageCore>>);
 
 impl HeedStorage {
-    pub fn create(path:  impl AsRef<Path>) -> Result<Self> {
-        let core = HeedStorageCore::create(path)?;
+    pub fn create(path:  impl AsRef<Path>, id: u64) -> Result<Self> {
+        let core = HeedStorageCore::create(path, id)?;
         Ok(Self(Arc::new(RwLock::new(core))))
     }
 
@@ -287,6 +304,7 @@ impl Storage for HeedStorage {
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
         raft_state.conf_state = store.conf_state()
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+        warn!("raft_state: {:#?}", raft_state);
         Ok(raft_state)
     }
 
@@ -302,11 +320,12 @@ impl Storage for HeedStorage {
         let first_index = self.first_index()?;
         let last_index = self.last_index()?;
         if idx < first_index - 1 {
+            warn!("this will fail");
             Err(raftrs::Error::Store(raftrs::StorageError::Compacted))
         } else if idx == first_index - 1 {
             // TODO: BAD
-            let snapshot = self.snapshot(0)?;
-            Ok(snapshot.get_metadata().term)
+            let term = self.snapshot(0).map(|s| s.get_metadata().term).unwrap_or(1);
+            Ok(term)
         } else if idx > last_index {
             return Err(raftrs::Error::Store(raftrs::StorageError::Unavailable));
         } else {
@@ -328,8 +347,10 @@ impl Storage for HeedStorage {
     fn last_index(&self) -> raftrs::Result<u64> {
         let store = self.rl();
         let reader = store.env.read_txn().unwrap();
-        store.last_index(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))
+        let last_index = store.last_index(&reader)
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+        println!("last index asked: {}", last_index);
+        Ok(last_index)
     }
 
     fn snapshot(&self, index: u64) -> raftrs::Result<Snapshot> {

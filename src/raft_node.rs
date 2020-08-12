@@ -10,10 +10,10 @@ use crate::storage::HeedStorage;
 use crate::raft_service;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use bincode::{deserialize, serialize};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use protobuf::Message as PMessage;
 use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
-use raftrs::{raw_node::RawNode, Config};
+use raftrs::{raw_node::RawNode, Config, prelude::*};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -80,8 +80,8 @@ impl DerefMut for Peer {
 impl Peer {
     pub async fn new(addr: &str) -> Result<Peer, tonic::transport::Error> {
         // TODO: clean up this mess
+        info!("connecting to node at {}", addr);
         let client = RaftServiceClient::connect(format!("http://{}", addr)).await?;
-        info!("NODE: connected to {}", addr);
         let addr = addr.to_string();
         Ok(Peer { addr, client })
     }
@@ -117,11 +117,23 @@ impl<S: Store + 'static> RaftNode<S> {
 
         config.validate().unwrap();
 
-        let storage = HeedStorage::create(".").unwrap();
-        let inner = RawNode::new(&config, storage).unwrap();
+        let mut s = Snapshot::default();
+        // Because we don't use the same configuration to initialize every node, so we use
+        // a non-zero index to force new followers catch up logs by snapshot first, which will
+        // bring all nodes to the same initial state.
+        s.mut_metadata().index = 1;
+        s.mut_metadata().term = 1;
+        s.mut_metadata().mut_conf_state().nodes = vec![1];
+
+        let mut storage = HeedStorage::create(".", 1).unwrap();
+        storage.wl().apply_snapshot(s).unwrap();
+        let mut inner = RawNode::new(&config, storage).unwrap();
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
         let last_snap_time = Instant::now();
+
+        inner.raft.become_candidate();
+        inner.raft.become_leader();
 
         RaftNode {
             inner,
@@ -153,7 +165,7 @@ impl<S: Store + 'static> RaftNode<S> {
 
         config.validate().unwrap();
 
-        let storage = HeedStorage::create(".").unwrap();
+        let storage = HeedStorage::create(".", id).unwrap();
         let inner = RawNode::new(&config, storage).unwrap();
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
@@ -227,6 +239,7 @@ impl<S: Store + 'static> RaftNode<S> {
 
         loop {
             if self.should_quit {
+                warn!("quitting node loop");
                 return;
             }
             match timeout(heartbeat, self.rcv.recv()).await {
@@ -248,14 +261,16 @@ impl<S: Store + 'static> RaftNode<S> {
                         chan.send(raft_response).unwrap();
                     } else {
                         // leader assign new id to peer
+                        info!("received request from: {}", change.get_node_id());
                         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
                         client_send.insert(seq, chan);
                         self.propose_conf_change(serialize(&seq).unwrap(), change)
                             .unwrap();
+                        println!("here");
                     }
                 }
                 Ok(Some(Message::Raft(m))) => {
-                    debug!("raft message: to={} from={}", self.raft.id, m.from);
+                    info!("raft message: to={} from={}", self.raft.id, m.from);
                     if let Ok(_a) = self.step(m) {};
                 }
                 Ok(Some(Message::Propose { proposal, chan })) => {
@@ -390,8 +405,8 @@ impl<S: Store + 'static> RaftNode<S> {
         match change_type {
             ConfChangeType::AddNode => {
                 let addr: String = deserialize(change.get_context()).unwrap();
+                info!("adding {} ({}) to peers", addr, id);
                 self.add_peer(&addr, id).await.unwrap();
-                info!("NODE: added {} ({}) to peers", addr, id);
             }
             ConfChangeType::RemoveNode => {
                 if change.get_node_id() == self.id() {

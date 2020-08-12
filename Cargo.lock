@@ -1640,12 +1640,10 @@ dependencies = [
 [[package]]
 name = "raft"
 version = "0.6.0-alpha"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b246d7eb1d53af6915946f3c70d8503171664f8fa4c0efa092e9897275a19dc"
 dependencies = [
  "getset",
  "hashbrown 0.5.0",
- "log 0.4.11",
+ "log 0.3.9",
  "protobuf",
  "quick-error",
  "raft-proto",

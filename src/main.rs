@@ -60,7 +60,7 @@ impl Store for HashStore {
 
 #[get("/put/{id}/{name}")]
 async fn put(
-    data: web::Data<(Arc<Mailbox>, Arc<RwLock<HashMap<u64, String>>>)>,
+    data: web::Data<(Arc<Mailbox>, HashStore)>,
     path: web::Path<(u64, String)>,
 ) -> impl Responder {
     let message = Message::Insert {
@@ -104,12 +104,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (raft_handle, mailbox) = match options.peer_addr {
         Some(addr) => {
+            info!("running in follower mode");
             let raft = Raft::new(options.raft_addr, store.clone());
             let mailbox = Arc::new(raft.mailbox());
             let handle = tokio::spawn(raft.join(addr));
             (handle, mailbox)
         }
         None => {
+            info!("running in leader mode");
             let raft = Raft::new(options.raft_addr, store.clone());
             let mailbox = Arc::new(raft.mailbox());
             let handle =  tokio::spawn(raft.lead());
@@ -132,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let _ = tokio::try_join!(raft_handle)?;
+    let result = tokio::try_join!(raft_handle)?;
+    result.0?;
     Ok(())
 }

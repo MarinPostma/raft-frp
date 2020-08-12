@@ -15,7 +15,7 @@ futures-retry = "0.5.0"
 log = { version = "0.4", features = ["std"] }
 prost = "0.6.1"
 protobuf = "2"
-raftrs = { package = "raft", version = "0.6.0-alpha" }
+raftrs = { package = "raft", path = "/home/mpostma/.cargo/registry/src/github.com-1ecc6299db9ec823/raft-0.6.0-alpha" }
 serde = { version = "1.0.114", features = ["derive"] }
 structopt = "0.3"
 tokio = { version = "0.2", features = ["full"] }

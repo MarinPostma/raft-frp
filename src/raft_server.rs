@@ -5,7 +5,7 @@ use crate::message::{Message, RaftResponse};
 use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
 use crate::raft_service::{self, ConfigChange, Empty };
 
-use log::{error, info};
+use log::{error, info, warn};
 use raftrs::eraftpb::{ConfChange, Message as RaftMessage};
 use tokio::sync::oneshot;
 use tokio::sync::mpsc;
@@ -35,6 +35,7 @@ impl RaftServer {
             .serve(addr)
             .await
             .expect("error running server");
+        warn!("server has quit");
     }
 }
 

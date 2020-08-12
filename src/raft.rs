@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tonic::Request;
 use bincode::serialize;
-use log::warn;
+use log::{warn, info};
 
 use std::fmt;
 
@@ -118,9 +118,11 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
     /// `addr` is not the current leader of the cluster
     pub async fn join(self, addr: String) -> Result<()> {
         // 1. try to discover the leader and obtain an id from it.
+        info!("attempting to join peer cluster at {}", addr);
         let mut leader_addr = addr.to_string();
         let (leader_id, node_id): (u64, u64) = loop {
             let mut client = RaftServiceClient::connect(format!("http://{}", leader_addr)).await?;
+            println!("here");
             let response = client
                 .request_id(Request::new(Empty::default()))
                 .await?
@@ -129,6 +131,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
                 ResultCode::WrongLeader => {
                     let leader: Leader = deserialize(&response.data)?;
                     leader_addr = leader.addr;
+                    info!("Wrong leader, retrying with leader at {}", leader_addr);
                     continue;
                 }
                 ResultCode::Ok => break deserialize(&response.data)?,
@@ -141,6 +144,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
             }
         };
 
+        info!("obtained ID from leader: {}", node_id);
         // 2. run server and node to prepare for joining
         let addr = self.addr.clone();
         let mut node = RaftNode::new_follower(self.rx, self.tx.clone(), node_id, self.store);
