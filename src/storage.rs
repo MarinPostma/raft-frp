@@ -137,8 +137,9 @@ impl HeedStorageCore {
         let mut last_index = self.last_index(&writer)?;
         for entry in entries {
             //assert_eq!(entry.get_index(), last_index + 1);
-            last_index += 1;
-            self.entries_db.put(&mut writer, &last_index, entry)?;
+            let index = entry.index;
+            last_index = std::cmp::max(index, last_index);
+            self.entries_db.put(&mut writer, &index, entry)?;
         }
         self.set_last_index(&mut writer, last_index)?;
         writer.commit()?;
@@ -241,7 +242,7 @@ impl HeedStorageCore {
 
     fn first_index(&self, r: &heed::RoTxn) -> Result<u64> {
         let first_entry = self.entries_db.first(r)?.expect("There should always be at least one entry in the db");
-        Ok(first_entry.0)
+        Ok(first_entry.0 + 1)
     }
 
     fn entry(&self, index: u64) -> Result<Option<Entry>> {
@@ -252,15 +253,18 @@ impl HeedStorageCore {
 
     fn entries(&self, low: u64, high: u64, max_size: impl Into<Option<u64>>) -> Result<Vec<Entry>> {
         info!("entries requested: {}->{}", low, high);
+        println!("entries requested: {}->{}", low, high);
         let reader = self.env.read_txn()?;
         let iter = self.entries_db.range(&reader, &(low..high))?;
         let max_size: Option<u64> = max_size.into();
         let mut size_count = 0;
         let entries = iter
-            .filter_map(|e| match e {
+            .filter_map(|e| {
+                println!("blablabla: {:?}", e);
+                match e {
                 Ok((_, e)) => Some(e),
                 _ => None,
-            })
+            }})
             .take_while(|entry| {
                 match max_size {
                     Some(max_size) => {
@@ -319,22 +323,23 @@ impl Storage for HeedStorage {
         let store = self.rl();
         let first_index = self.first_index()?;
         let last_index = self.last_index()?;
-        if idx < first_index - 1 {
-            warn!("this will fail");
-            Err(raftrs::Error::Store(raftrs::StorageError::Compacted))
-        } else if idx == first_index - 1 {
-            // TODO: BAD
-            let term = self.snapshot(0).map(|s| s.get_metadata().term).unwrap_or(1);
-            Ok(term)
-        } else if idx > last_index {
-            return Err(raftrs::Error::Store(raftrs::StorageError::Unavailable));
-        } else {
-            match store.entry(idx)
-                .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))? {
-                    Some(entry) => Ok(entry.get_term()),
-                    None => Err(raftrs::Error::Store(raftrs::StorageError::Unavailable)),
-                }
+        let hard_state = store.hard_state()
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+        if idx == hard_state.commit {
+            return Ok(hard_state.term)
         }
+
+        if idx < first_index {
+            return Err(raftrs::Error::Store(raftrs::StorageError::Compacted));
+        }
+
+        if idx > last_index {
+            return Err(raftrs::Error::Store(raftrs::StorageError::Unavailable));
+        }
+
+        let entry = store.entry(idx)
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+        Ok(entry.map(|e| e.term).unwrap_or(0))
     }
 
     fn first_index(&self) -> raftrs::Result<u64> {

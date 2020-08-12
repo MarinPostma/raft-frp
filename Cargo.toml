@@ -27,6 +27,9 @@ heed-traits = "0.7.0"
 [build-dependencies]
 tonic-build = "0.3.0"
 
+[dev-dependencies]
+tempdir = "0.3.7"
+
 [lib]
 name = "raft"
 path = "src/lib.rs"

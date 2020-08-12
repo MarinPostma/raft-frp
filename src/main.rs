@@ -27,6 +27,9 @@ struct HashStore(Arc<RwLock<HashMap<u64, String>>>);
 
 impl HashStore {
     fn new() -> Self { Self(Arc::new(RwLock::new(HashMap::new()))) }
+    fn get(&self, id: u64) -> Option<String> {
+        self.0.read().unwrap().get(&id).cloned()
+    }
 }
 
 impl Store for HashStore {
@@ -75,11 +78,12 @@ async fn put(
 
 #[get("/get/{id}")]
 async fn get(
-    data: web::Data<(Arc<Mailbox>, Arc<RwLock<HashMap<u64, String>>>)>,
+    data: web::Data<(Arc<Mailbox>, HashStore)>,
     path: web::Path<u64>,
 ) -> impl Responder {
-    let db = data.1.read().unwrap();
-    let response = db.get(&path.into_inner());
+    let id = path.into_inner();
+    println!("requested: {}", id);
+    let response = data.1.get(id);
     format!("{:?}", response)
 }
 

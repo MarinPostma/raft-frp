@@ -10,7 +10,7 @@ use crate::storage::HeedStorage;
 use crate::raft_service;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use bincode::{deserialize, serialize};
-use log::{error, info, warn};
+use log::*;
 use protobuf::Message as PMessage;
 use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
 use raftrs::{raw_node::RawNode, Config, prelude::*};
@@ -30,16 +30,24 @@ struct MessageSender {
 }
 
 impl MessageSender {
+    /// attempt to send a message MessageSender::max_retries times at MessageSender::timeout
+    /// inteval. 
     async fn send(mut self) {
         let mut current_retry = 0usize;
+
+        debug!("attempting to send message");
 
         loop {
             let message_request = Request::new(raft_service::Message {
                 inner: self.message.clone(),
             });
             match self.client.send_message(message_request).await {
-                Ok(_) => return,
-                Err(_) => {
+                Ok(_) => {
+                    debug!("successfully sent message");
+                    return;
+                },
+                Err(e) => {
+                    warn!("error sendind message: {}", e);
                     if current_retry < self.max_retries {
                         current_retry += 1;
                         tokio::time::delay_for(self.timeout).await;
@@ -80,9 +88,10 @@ impl DerefMut for Peer {
 impl Peer {
     pub async fn new(addr: &str) -> Result<Peer, tonic::transport::Error> {
         // TODO: clean up this mess
-        info!("connecting to node at {}", addr);
+        info!("connecting to node at {}...", addr);
         let client = RaftServiceClient::connect(format!("http://{}", addr)).await?;
         let addr = addr.to_string();
+        info!("connected to node.");
         Ok(Peer { addr, client })
     }
 }
@@ -270,7 +279,7 @@ impl<S: Store + 'static> RaftNode<S> {
                     }
                 }
                 Ok(Some(Message::Raft(m))) => {
-                    info!("raft message: to={} from={}", self.raft.id, m.from);
+                    debug!("raft message: to={} from={}", self.raft.id, m.from);
                     if let Ok(_a) = self.step(m) {};
                 }
                 Ok(Some(Message::Propose { proposal, chan })) => {
@@ -303,7 +312,7 @@ impl<S: Store + 'static> RaftNode<S> {
                 Err(_) => (),
             }
 
-            //info!("tick");
+            //debug!("tick");
             let elapsed = now.elapsed();
             now = Instant::now();
             if elapsed > heartbeat {
@@ -337,6 +346,7 @@ impl<S: Store + 'static> RaftNode<S> {
         }
 
         for message in ready.messages.drain(..) {
+            debug!("message from {} to {}", message.get_from(), message.get_to());
             let client = match self.peer_mut(message.get_to()) {
                 Some(ref peer) => peer.client.clone(),
                 None => continue,
