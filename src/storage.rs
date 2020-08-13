@@ -9,8 +9,16 @@ use std::borrow::Cow;
 use protobuf::Message;
 use log::{warn, info};
 
-
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Sync + Send>>;
+
+pub trait LogStore: Storage {
+    fn append(&mut self, entries: &[Entry]) -> Result<()>;
+    fn set_hard_state(&mut self, hard_state: &HardState) -> Result<()>;
+    fn set_conf_state(&mut self, conf_state: &ConfState) -> Result<()>;
+    fn create_snapshot(&mut self, data: Vec<u8>) -> Result<()>;
+    fn apply_snapshot(&mut self, snapshot: Snapshot) -> Result<()>;
+    fn compact(&mut self, index: u64) -> Result<()>;
+}
 
 const SNAPSHOT_KEY: &str = "snapshot";
 const LAST_INDEX_KEY: &str = "last_index";
@@ -117,81 +125,46 @@ impl HeedStorageCore {
 
         let hard_state = HardState::new();
         let conf_state = ConfState::new();
+        
 
-        let mut storage = Self {
+        let storage = Self {
             metadata_db,
             entries_db,
             env,
         };
 
-        storage.set_hard_state(&hard_state)?;
-        storage.set_conf_state(&conf_state)?;
-        storage.append(&[Entry::new()])?;
+        let mut writer = storage.env.write_txn()?;
+        storage.set_hard_state(&mut writer, &hard_state)?;
+        storage.set_conf_state(&mut writer, &conf_state)?;
+        storage.append(&mut writer, &[Entry::new()])?;
+        writer.commit()?;
 
         Ok(storage)
     }
 
-    pub fn append(&mut self, entries: &[Entry]) -> Result<()> {
-        info!("adding entries");
-        let mut writer = self.env.write_txn()?;
-        let mut last_index = self.last_index(&writer)?;
-        for entry in entries {
-            //assert_eq!(entry.get_index(), last_index + 1);
-            let index = entry.index;
-            last_index = std::cmp::max(index, last_index);
-            self.entries_db.put(&mut writer, &index, entry)?;
-        }
-        self.set_last_index(&mut writer, last_index)?;
-        writer.commit()?;
-        let reader = self.env.read_txn()?;
-        self.last_index(&reader)?;
+    fn set_hard_state(&self, writer: &mut heed::RwTxn, hard_state: &HardState) -> Result<()> {
+        self.metadata_db.put::<_, Str, HeedHardState>(writer, HARD_STATE_KEY, hard_state)?;
         Ok(())
     }
 
-    pub fn set_hard_state(&mut self, hard_state: &HardState) -> Result<()> {
-        let mut writer = self.env.write_txn()?;
-        self.metadata_db.put::<_, Str, HeedHardState>(&mut writer, HARD_STATE_KEY, hard_state)?;
-        writer.commit()?;
-        Ok(())
-    }
 
-    pub fn hard_state(&self) -> Result<HardState> {
-        let reader = self.env.read_txn()?;
-        let hard_state = self.metadata_db.get::<_, Str, HeedHardState>(&reader, HARD_STATE_KEY)?;
+    fn hard_state(&self, reader: &heed::RoTxn) -> Result<HardState> {
+        let hard_state = self.metadata_db.get::<_, Str, HeedHardState>(reader, HARD_STATE_KEY)?;
         Ok(hard_state.expect("missing hard_state"))
     }
 
-    pub fn set_conf_state(&mut self, conf_state: &ConfState) -> Result<()> {
-        let mut writer = self.env.write_txn()?;
-        self.metadata_db.put::<_, Str, HeedConfState>(&mut writer, CONF_STATE_KEY, conf_state)?;
-        writer.commit()?;
+    pub fn set_conf_state(&self, writer: &mut heed::RwTxn, conf_state: &ConfState) -> Result<()> {
+        self.metadata_db.put::<_, Str, HeedConfState>(writer, CONF_STATE_KEY, conf_state)?;
         Ok(())
     }
 
-    pub fn conf_state(&self) -> Result<ConfState> {
-        let reader = self.env.read_txn()?;
-        let conf_state = self.metadata_db.get::<_, Str, HeedConfState>(&reader, CONF_STATE_KEY)?;
+    pub fn conf_state(&self, reader: &heed::RoTxn) -> Result<ConfState> {
+        let conf_state = self.metadata_db.get::<_, Str, HeedConfState>(reader, CONF_STATE_KEY)?;
         Ok(conf_state.expect("there should be a conf state"))
     }
 
-    /// attempts to create a snapshot with the lastest commited entry
-    pub fn create_snapshot(&mut self, data: Vec<u8>) -> Result<()> {
-        let hard_state = self.hard_state()?;
-        let conf_state = self.conf_state()?;
-        let mut snapshot = Snapshot::new();
-        snapshot.set_data(data);
-        let meta = snapshot.mut_metadata();
-        meta.set_conf_state(conf_state);
-        meta.index = hard_state.commit;
-        meta.term = hard_state.term;
-        self.set_snapshot(&snapshot)?;
-        Ok(())
-    }
-
-    fn set_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        let mut writer = self.env.write_txn()?;
-        self.metadata_db.put::<_, Str, HeedSnapshot>(&mut writer, SNAPSHOT_KEY, snapshot)?;
-        writer.commit()?;
+    fn set_snapshot(&self, writer: &mut heed::RwTxn, snapshot: &Snapshot) -> Result<()> {
+        self.metadata_db.put::<_, Str, HeedSnapshot>(writer, SNAPSHOT_KEY, snapshot)?;
         Ok(())
     }
 
@@ -199,31 +172,6 @@ impl HeedStorageCore {
         let reader = self.env.read_txn()?;
         let snapshot = self.metadata_db.get::<_, Str, HeedSnapshot>(&reader, SNAPSHOT_KEY)?;
         Ok(snapshot)
-    }
-
-    pub fn apply_snapshot(&mut self, snapshot: Snapshot) -> Result<()> {
-        let metadata = snapshot.get_metadata();
-        let conf_state = metadata.get_conf_state();
-        let mut hard_state = self.hard_state()?;
-        hard_state.set_term(metadata.term);
-        hard_state.set_commit(metadata.index);
-        // TODO: make this operation atomic
-        self.set_hard_state(&hard_state)?;
-        self.set_conf_state(conf_state)?;
-        let mut writer = self.env.write_txn()?;
-        self.set_last_index(&mut writer, metadata.index)?;
-        writer.commit()?;
-        Ok(())
-    }
-
-    pub fn compact(&mut self, index: u64) -> Result<()> {
-        let mut writer = self.env.write_txn()?;
-        //let last_index = self.last_index(&writer)?;
-        // there should always be at least one entry in the log
-        //assert!(last_index > index + 1);
-        self.entries_db.delete_range(&mut writer, &(..index))?;
-        writer.commit()?;
-        Ok(())
     }
 
     fn last_index(&self, r: &heed::RoTxn) -> Result<u64> {
@@ -245,9 +193,8 @@ impl HeedStorageCore {
         Ok(first_entry.0 + 1)
     }
 
-    fn entry(&self, index: u64) -> Result<Option<Entry>> {
-        let reader = self.env.read_txn()?;
-        let entry = self.entries_db.get(&reader, &index)?;
+    fn entry(&self, reader: &heed::RoTxn, index: u64) -> Result<Option<Entry>> {
+        let entry = self.entries_db.get(reader, &index)?;
         Ok(entry)
     }
 
@@ -281,6 +228,19 @@ impl HeedStorageCore {
             .collect();
         Ok(entries)
     }
+
+    fn append(&self, writer: &mut heed::RwTxn, entries: &[Entry]) -> Result<()> {
+        let mut last_index = self.last_index(&writer)?;
+        // TODO: ensure entry arrive in the right order
+        for entry in entries {
+            //assert_eq!(entry.get_index(), last_index + 1);
+            let index = entry.index;
+            last_index = std::cmp::max(index, last_index);
+            self.entries_db.put(writer, &index, entry)?;
+        }
+        self.set_last_index(writer, last_index)?;
+        Ok(())
+    }
 }
 
 pub struct HeedStorage(Arc<RwLock<HeedStorageCore>>);
@@ -291,28 +251,110 @@ impl HeedStorage {
         Ok(Self(Arc::new(RwLock::new(core))))
     }
 
-    pub fn wl(&mut self) -> RwLockWriteGuard<HeedStorageCore> {
+    fn wl(&mut self) -> RwLockWriteGuard<HeedStorageCore> {
         self.0.write().unwrap()
     }
 
-    pub fn rl(&self) -> RwLockReadGuard<HeedStorageCore> {
+    fn rl(&self) -> RwLockReadGuard<HeedStorageCore> {
         self.0.read().unwrap()
+    }
+}
+
+impl LogStore for HeedStorage {
+    fn compact(&mut self, index: u64) -> Result<()> {
+        println!("compact");
+        let store = self.wl();
+        let mut writer = store.env.write_txn()?;
+        // TODO, check that compaction is legal
+        //let last_index = self.last_index(&writer)?;
+        // there should always be at least one entry in the log
+        //assert!(last_index > index + 1);
+        store.entries_db.delete_range(&mut writer, &(..index))?;
+        writer.commit()?;
+        Ok(())
+    }
+
+    fn append(&mut self, entries: &[Entry]) -> Result<()> {
+        println!("append");
+        let store = self.wl();
+        let mut writer = store.env.write_txn()?;
+        store.append(&mut writer, entries)?;
+        writer.commit()?;
+        Ok(())
+    }
+
+    fn set_hard_state(&mut self, hard_state: &HardState) -> Result<()> {
+        println!("set hard state");
+        let store = self.wl();
+        let mut writer = store.env.write_txn()?;
+        store.set_hard_state(&mut writer, hard_state)?; 
+        writer.commit()?;
+        Ok(())
+    }
+
+    fn set_conf_state(&mut self, conf_state: &ConfState) -> Result<()> {
+        println!("set conf state");
+        let store = self.wl();
+        let mut writer = store.env.write_txn()?;
+        store.set_conf_state(&mut writer, conf_state)?;
+        writer.commit()?;
+        Ok(())
+    }
+
+    fn create_snapshot(&mut self, data: Vec<u8>) -> Result<()> {
+        println!("create snapshot");
+        let store = self.wl();
+        let mut writer = store.env.write_txn()?;
+        let hard_state = store.hard_state(&writer)?;
+        let conf_state = store.conf_state(&writer)?;
+
+        let mut snapshot = Snapshot::new();
+        snapshot.set_data(data);
+
+        let meta = snapshot.mut_metadata();
+        meta.set_conf_state(conf_state);
+        meta.index = hard_state.commit;
+        meta.term = hard_state.term;
+
+        store.set_snapshot(&mut writer, &snapshot)?;
+        writer.commit()?;
+        Ok(())
+    }
+
+    fn apply_snapshot(&mut self, snapshot: Snapshot) -> Result<()> {
+        println!("apply snapshot");
+        let store = self.wl();
+        let mut writer = store.env.write_txn()?;
+        let metadata = snapshot.get_metadata();
+        let conf_state = metadata.get_conf_state();
+        let mut hard_state = store.hard_state(&writer)?;
+        hard_state.set_term(metadata.term);
+        hard_state.set_commit(metadata.index);
+        store.set_hard_state(&mut writer, &hard_state)?;
+        store.set_conf_state(&mut writer, conf_state)?;
+        store.set_last_index(&mut writer, metadata.index)?;
+        writer.commit()?;
+        Ok(())
     }
 }
 
 impl Storage for HeedStorage {
     fn initial_state(&self) -> raftrs::Result<RaftState> {
+        println!("initial state");
         let store = self.rl();
+        let reader = store.env.read_txn()
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
         let mut raft_state = RaftState::default();
-        raft_state.hard_state = store.hard_state()
+        raft_state.hard_state = store.hard_state(&reader)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
-        raft_state.conf_state = store.conf_state()
+        raft_state.conf_state = store.conf_state(&reader)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
         warn!("raft_state: {:#?}", raft_state);
         Ok(raft_state)
     }
 
     fn entries(&self, low: u64, high: u64, max_size: impl Into<Option<u64>>) -> raftrs::Result<Vec<Entry>> {
+        println!("entries");
         let store = self.rl();
         let entries = store.entries(low, high, max_size)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
@@ -320,10 +362,15 @@ impl Storage for HeedStorage {
     }
 
     fn term(&self, idx: u64) -> raftrs::Result<u64> {
+        println!("term");
         let store = self.rl();
-        let first_index = self.first_index()?;
-        let last_index = self.last_index()?;
-        let hard_state = store.hard_state()
+        let reader = store.env.read_txn()
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
+        let first_index = store.first_index(&reader)
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
+        let last_index = store.last_index(&reader)
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
+        let hard_state = store.hard_state(&reader)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
         if idx == hard_state.commit {
             return Ok(hard_state.term)
@@ -337,12 +384,14 @@ impl Storage for HeedStorage {
             return Err(raftrs::Error::Store(raftrs::StorageError::Unavailable));
         }
 
-        let entry = store.entry(idx)
+        let entry = store.entry(&reader, idx)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+        println!("here");
         Ok(entry.map(|e| e.term).unwrap_or(0))
     }
 
     fn first_index(&self) -> raftrs::Result<u64> {
+        println!("first index");
         let store = self.rl();
         let reader = store.env.read_txn().unwrap();
         store.first_index(&reader)
@@ -350,6 +399,7 @@ impl Storage for HeedStorage {
     }
 
     fn last_index(&self) -> raftrs::Result<u64> {
+        println!("last index");
         let store = self.rl();
         let reader = store.env.read_txn().unwrap();
         let last_index = store.last_index(&reader)
@@ -358,8 +408,8 @@ impl Storage for HeedStorage {
         Ok(last_index)
     }
 
-    fn snapshot(&self, index: u64) -> raftrs::Result<Snapshot> {
-        
+    fn snapshot(&self, _index: u64) -> raftrs::Result<Snapshot> {
+        println!("snapshot");
         let store = self.rl();
         match store.snapshot() {
             Ok(Some(snapshot)) => Ok(snapshot),

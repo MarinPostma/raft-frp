@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::message::{Message, RaftResponse};
 use crate::raft::Store;
 
-use crate::storage::HeedStorage;
+use crate::storage::{HeedStorage, LogStore};
 use crate::raft_service;
 use crate::raft_service::raft_service_client::RaftServiceClient;
 use bincode::{deserialize, serialize};
@@ -131,7 +131,7 @@ impl<S: Store + 'static> RaftNode<S> {
         s.mut_metadata().mut_conf_state().nodes = vec![1];
 
         let mut storage = HeedStorage::create(".", 1).unwrap();
-        storage.wl().apply_snapshot(s).unwrap();
+        storage.apply_snapshot(s).unwrap();
         let mut inner = RawNode::new(&config, storage).unwrap();
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
@@ -340,13 +340,13 @@ impl<S: Store + 'static> RaftNode<S> {
 
         if !ready.entries().is_empty() {
             let entries = ready.entries();
-            let mut store = self.mut_store().wl();
+            let store = self.mut_store();
             store.append(entries).unwrap();
         }
 
         if let Some(hs) = ready.hs() {
             // Raft HardState changed, and we need to persist it.
-            let mut store = self.mut_store().wl();
+            let store = self.mut_store();
             store.set_hard_state(hs).unwrap();
         }
 
@@ -370,13 +370,13 @@ impl<S: Store + 'static> RaftNode<S> {
         if !raftrs::raw_node::is_empty_snap(ready.snapshot()) {
             let snapshot = ready.snapshot();
             self.store.restore(snapshot.get_data()).unwrap();
-            let mut store = self.mut_store().wl();
+            let store = self.mut_store();
             store.apply_snapshot(snapshot.clone()).unwrap();
         }
 
         if let Some(hs) = ready.hs() {
             // Raft HardState changed, and we need to persist it.
-            let mut store = self.mut_store().wl();
+            let store = self.mut_store();
             store.set_hard_state(hs).unwrap();
         }
 
@@ -438,7 +438,7 @@ impl<S: Store + 'static> RaftNode<S> {
             let last_applied = self.raft.raft_log.applied;
             let snapshot = self.store.snapshot();
             {
-                let mut store = self.mut_store().wl();
+                let store = self.mut_store();
                 store.set_conf_state(&cs).unwrap();
                 store.compact(last_applied).unwrap();
                 let _ = store.create_snapshot(snapshot);
@@ -480,7 +480,7 @@ impl<S: Store + 'static> RaftNode<S> {
             self.last_snap_time = Instant::now();
             let last_applied = self.raft.raft_log.applied;
             let snapshot = self.store.snapshot();
-            let mut store = self.mut_store().wl();
+            let store = self.mut_store();
             store.compact(last_applied).unwrap();
             let _ = store.create_snapshot(snapshot);
         }
