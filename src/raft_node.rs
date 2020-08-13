@@ -34,24 +34,20 @@ impl MessageSender {
     /// inteval. 
     async fn send(mut self) {
         let mut current_retry = 0usize;
-
-        debug!("attempting to send message");
-
         loop {
             let message_request = Request::new(raft_service::Message {
                 inner: self.message.clone(),
             });
             match self.client.send_message(message_request).await {
                 Ok(_) => {
-                    debug!("successfully sent message");
                     return;
                 },
                 Err(e) => {
-                    warn!("error sendind message: {}", e);
                     if current_retry < self.max_retries {
                         current_retry += 1;
                         tokio::time::delay_for(self.timeout).await;
                     } else {
+                        debug!("error sending message after {} retries: {}", self.max_retries, e);
                         let _ = self
                             .chan
                             .send(Message::ReportUnreachable {
@@ -239,6 +235,17 @@ impl<S: Store + 'static> RaftNode<S> {
         next_id
     }
 
+    fn send_wrong_leader(&self, channel: oneshot::Sender<RaftResponse>) -> Result<(), RaftResponse> {
+        let leader_id = self.leader();
+        // leader can't be an empty node
+        let leader_addr = self.peers[&leader_id].as_ref().unwrap().addr.clone();
+        let raft_response = RaftResponse::WrongLeader {
+            leader_id,
+            leader_addr,
+        };
+        channel.send(raft_response)
+    }
+
     pub async fn run(mut self) {
         let mut heartbeat = Duration::from_millis(100);
         let mut now = Instant::now();
@@ -248,7 +255,7 @@ impl<S: Store + 'static> RaftNode<S> {
 
         loop {
             if self.should_quit {
-                warn!("quitting node loop");
+                warn!("Quitting raft");
                 return;
             }
             match timeout(heartbeat, self.rcv.recv()).await {
@@ -260,22 +267,16 @@ impl<S: Store + 'static> RaftNode<S> {
 
                     if !self.is_leader() {
                         // wrong leader send client cluster data
-                        let leader_id = self.leader();
-                        // leader can't be an empty node
-                        let leader_addr = self.peers[&leader_id].as_ref().unwrap().addr.clone();
-                        let raft_response = RaftResponse::WrongLeader {
-                            leader_id,
-                            leader_addr,
-                        };
-                        chan.send(raft_response).unwrap();
+                        // TODO: retry strategy in case of failure
+                        self.send_wrong_leader(chan).unwrap();
                     } else {
                         // leader assign new id to peer
-                        info!("received request from: {}", change.get_node_id());
+                        debug!("received request from: {}", change.get_node_id());
                         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
                         client_send.insert(seq, chan);
                         self.propose_conf_change(serialize(&seq).unwrap(), change)
                             .unwrap();
-                        println!("here");
+                        
                     }
                 }
                 Ok(Some(Message::Raft(m))) => {
@@ -294,7 +295,6 @@ impl<S: Store + 'static> RaftNode<S> {
                         };
                         chan.send(raft_response).unwrap();
                     } else {
-                        info!("leader received proposal");
                         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
                         client_send.insert(seq, chan);
                         let seq = serialize(&seq).unwrap();
@@ -302,8 +302,14 @@ impl<S: Store + 'static> RaftNode<S> {
                     }
                 }
                 Ok(Some(Message::RequestId { chan })) => {
-                    let id = self.reserve_next_peer_id();
-                    chan.send(id).unwrap();
+                    if !self.is_leader() {
+                        // TODO: retry strategy in case of failure
+                        info!("requested Id, but not leader");
+                        self.send_wrong_leader(chan).unwrap();
+                    } else {
+                        let id = self.reserve_next_peer_id();
+                        chan.send(RaftResponse::IdReserved { id }).unwrap();
+                    }
                 }
                 Ok(Some(Message::ReportUnreachable { node_id })) => {
                     self.report_unreachable(node_id);
@@ -312,7 +318,6 @@ impl<S: Store + 'static> RaftNode<S> {
                 Err(_) => (),
             }
 
-            //debug!("tick");
             let elapsed = now.elapsed();
             now = Instant::now();
             if elapsed > heartbeat {
@@ -471,7 +476,7 @@ impl<S: Store + 'static> RaftNode<S> {
         }
 
         if Instant::now() > self.last_snap_time + Duration::from_secs(15) {
-            warn!("creating backup");
+            info!("creating backup..");
             self.last_snap_time = Instant::now();
             let last_applied = self.raft.raft_log.applied;
             let snapshot = self.store.snapshot();

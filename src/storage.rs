@@ -112,7 +112,7 @@ impl HeedStorageCore {
             .max_dbs(3000)
             .open(path)?;
         let entries_db: Database<OwnedType<u64>, HeedEntry> = env.create_database(Some("entries"))?;
-        println!("hereeee");
+        
         let metadata_db = env.create_poly_database(Some("meta"))?;
 
         let hard_state = HardState::new();
@@ -230,12 +230,12 @@ impl HeedStorageCore {
         let last_index = self
             .metadata_db.get::<_, Str, OwnedType<u64>>(r, LAST_INDEX_KEY)?
             .unwrap_or(0);
-        println!("last index requested: {}", last_index);
+        
         Ok(last_index)
     }
 
     fn set_last_index(&self, w: &mut heed::RwTxn, index: u64) -> Result<()> {
-        println!("setting last index: {}", index);
+        
         self.metadata_db.put::<_, Str, OwnedType<u64>>(w, LAST_INDEX_KEY, &index)?;
         Ok(())
     }
@@ -253,14 +253,14 @@ impl HeedStorageCore {
 
     fn entries(&self, low: u64, high: u64, max_size: impl Into<Option<u64>>) -> Result<Vec<Entry>> {
         info!("entries requested: {}->{}", low, high);
-        println!("entries requested: {}->{}", low, high);
+        
         let reader = self.env.read_txn()?;
         let iter = self.entries_db.range(&reader, &(low..high))?;
         let max_size: Option<u64> = max_size.into();
         let mut size_count = 0;
         let entries = iter
             .filter_map(|e| {
-                println!("blablabla: {:?}", e);
+                
                 match e {
                 Ok((_, e)) => Some(e),
                 _ => None,
@@ -354,12 +354,12 @@ impl Storage for HeedStorage {
         let reader = store.env.read_txn().unwrap();
         let last_index = store.last_index(&reader)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
-        println!("last index asked: {}", last_index);
+        
         Ok(last_index)
     }
 
     fn snapshot(&self, index: u64) -> raftrs::Result<Snapshot> {
-        println!("requested index {}", index);
+        
         let store = self.rl();
         match store.snapshot() {
             Ok(Some(snapshot)) => Ok(snapshot),

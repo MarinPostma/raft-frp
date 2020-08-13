@@ -8,6 +8,7 @@ use tokio::sync::oneshot::Sender;
 pub enum RaftResponse {
     WrongLeader { leader_id: u64, leader_addr: String },
     JoinSuccess { assigned_id: u64, peer_addrs: HashMap<u64, String> },
+    IdReserved { id: u64 },
     Error,
     Response { data: Vec<u8> },
     Ok,
@@ -23,7 +24,7 @@ pub enum Message {
         change: ConfChange,
         chan: Sender<RaftResponse>,
     },
-    RequestId { chan: Sender<u64> },
+    RequestId { chan: Sender<RaftResponse> },
     ReportUnreachable { node_id: u64 },
     Raft(RaftMessage),
 }

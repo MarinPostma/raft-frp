@@ -10,19 +10,12 @@ use anyhow::{anyhow, Result};
 use bincode::deserialize;
 use protobuf::Message as _;
 use raftrs::eraftpb::{ConfChange, ConfChangeType};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tonic::Request;
 use bincode::serialize;
 use log::{warn, info};
 
 use std::fmt;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Leader {
-    id: u64,
-    addr: String,
-}
 
 pub trait Store {
     type Error: Sync + Send + std::error::Error;
@@ -122,15 +115,15 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
         let mut leader_addr = addr.to_string();
         let (leader_id, node_id): (u64, u64) = loop {
             let mut client = RaftServiceClient::connect(format!("http://{}", leader_addr)).await?;
-            println!("here");
             let response = client
                 .request_id(Request::new(Empty::default()))
                 .await?
                 .into_inner();
             match response.code() {
                 ResultCode::WrongLeader => {
-                    let leader: Leader = deserialize(&response.data)?;
-                    leader_addr = leader.addr;
+                    info!("this is the wrong leader");
+                    let leader: (u64, String) = deserialize(&response.data)?;
+                    leader_addr = leader.1;
                     info!("Wrong leader, retrying with leader at {}", leader_addr);
                     continue;
                 }

@@ -45,11 +45,23 @@ impl RaftService for RaftServer {
         let mut sender = self.snd.clone();
         let (tx, rx) = oneshot::channel();
         let _ = sender.send(Message::RequestId { chan: tx }).await;
-        let id = rx.await.unwrap();
-        Ok(Response::new(raft_service::IdRequestReponse {
-            code: raft_service::ResultCode::Ok as i32,
-            data: serialize(&(1u64, id)).unwrap(),
-        }))
+        let response = rx.await.unwrap();
+        match response {
+            RaftResponse::WrongLeader { leader_id, leader_addr } => {
+                warn!("sending wrong leader");
+                Ok(Response::new(raft_service::IdRequestReponse {
+                    code: raft_service::ResultCode::WrongLeader as i32,
+                    data: serialize(&(leader_id, leader_addr)).unwrap(),
+                }))
+            }
+            RaftResponse::IdReserved { id } => {
+                Ok(Response::new(raft_service::IdRequestReponse {
+                    code: raft_service::ResultCode::Ok as i32,
+                    data: serialize(&(1u64, id)).unwrap(),
+                }))
+            }
+            _ => unreachable!()
+        }
     }
 
     async fn change_config(&self, req: Request<ConfigChange>) -> Result<Response<raft_service::RaftResponse>, Status> {

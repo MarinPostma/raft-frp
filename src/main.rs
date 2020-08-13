@@ -82,7 +82,7 @@ async fn get(
     path: web::Path<u64>,
 ) -> impl Responder {
     let id = path.into_inner();
-    println!("requested: {}", id);
+    
     let response = data.1.get(id);
     format!("{:?}", response)
 }
