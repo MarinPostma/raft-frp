@@ -189,7 +189,10 @@ impl HeedStorageCore {
     }
 
     fn first_index(&self, r: &heed::RoTxn) -> Result<u64> {
-        let first_entry = self.entries_db.first(r)?.expect("There should always be at least one entry in the db");
+        let first_entry = self
+            .entries_db
+            .first(r)?
+            .expect("There should always be at least one entry in the db");
         Ok(first_entry.0 + 1)
     }
 
@@ -262,7 +265,6 @@ impl HeedStorage {
 
 impl LogStore for HeedStorage {
     fn compact(&mut self, index: u64) -> Result<()> {
-        println!("compact");
         let store = self.wl();
         let mut writer = store.env.write_txn()?;
         // TODO, check that compaction is legal
@@ -275,7 +277,6 @@ impl LogStore for HeedStorage {
     }
 
     fn append(&mut self, entries: &[Entry]) -> Result<()> {
-        println!("append");
         let store = self.wl();
         let mut writer = store.env.write_txn()?;
         store.append(&mut writer, entries)?;
@@ -284,7 +285,6 @@ impl LogStore for HeedStorage {
     }
 
     fn set_hard_state(&mut self, hard_state: &HardState) -> Result<()> {
-        println!("set hard state");
         let store = self.wl();
         let mut writer = store.env.write_txn()?;
         store.set_hard_state(&mut writer, hard_state)?; 
@@ -293,7 +293,6 @@ impl LogStore for HeedStorage {
     }
 
     fn set_conf_state(&mut self, conf_state: &ConfState) -> Result<()> {
-        println!("set conf state");
         let store = self.wl();
         let mut writer = store.env.write_txn()?;
         store.set_conf_state(&mut writer, conf_state)?;
@@ -302,7 +301,6 @@ impl LogStore for HeedStorage {
     }
 
     fn create_snapshot(&mut self, data: Vec<u8>) -> Result<()> {
-        println!("create snapshot");
         let store = self.wl();
         let mut writer = store.env.write_txn()?;
         let hard_state = store.hard_state(&writer)?;
@@ -322,7 +320,6 @@ impl LogStore for HeedStorage {
     }
 
     fn apply_snapshot(&mut self, snapshot: Snapshot) -> Result<()> {
-        println!("apply snapshot");
         let store = self.wl();
         let mut writer = store.env.write_txn()?;
         let metadata = snapshot.get_metadata();
@@ -340,7 +337,6 @@ impl LogStore for HeedStorage {
 
 impl Storage for HeedStorage {
     fn initial_state(&self) -> raftrs::Result<RaftState> {
-        println!("initial state");
         let store = self.rl();
         let reader = store.env.read_txn()
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
@@ -354,7 +350,6 @@ impl Storage for HeedStorage {
     }
 
     fn entries(&self, low: u64, high: u64, max_size: impl Into<Option<u64>>) -> raftrs::Result<Vec<Entry>> {
-        println!("entries");
         let store = self.rl();
         let entries = store.entries(low, high, max_size)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
@@ -362,7 +357,6 @@ impl Storage for HeedStorage {
     }
 
     fn term(&self, idx: u64) -> raftrs::Result<u64> {
-        println!("term");
         let store = self.rl();
         let reader = store.env.read_txn()
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
@@ -386,12 +380,10 @@ impl Storage for HeedStorage {
 
         let entry = store.entry(&reader, idx)
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
-        println!("here");
         Ok(entry.map(|e| e.term).unwrap_or(0))
     }
 
     fn first_index(&self) -> raftrs::Result<u64> {
-        println!("first index");
         let store = self.rl();
         let reader = store.env.read_txn().unwrap();
         store.first_index(&reader)
@@ -399,7 +391,6 @@ impl Storage for HeedStorage {
     }
 
     fn last_index(&self) -> raftrs::Result<u64> {
-        println!("last index");
         let store = self.rl();
         let reader = store.env.read_txn().unwrap();
         let last_index = store.last_index(&reader)
@@ -409,7 +400,6 @@ impl Storage for HeedStorage {
     }
 
     fn snapshot(&self, _index: u64) -> raftrs::Result<Snapshot> {
-        println!("snapshot");
         let store = self.rl();
         match store.snapshot() {
             Ok(Some(snapshot)) => Ok(snapshot),

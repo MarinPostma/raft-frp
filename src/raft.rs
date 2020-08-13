@@ -8,14 +8,16 @@ use crate::RaftError;
 
 use anyhow::{anyhow, Result};
 use bincode::deserialize;
+use bincode::serialize;
+use log::{warn, info};
 use protobuf::Message as _;
 use raftrs::eraftpb::{ConfChange, ConfChangeType};
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
 use tonic::Request;
-use bincode::serialize;
-use log::{warn, info};
 
 use std::fmt;
+use std::time::Duration;
 
 pub trait Store {
     type Error: Sync + Send + std::error::Error;
@@ -44,10 +46,11 @@ impl Mailbox {
         let (tx, rx) = oneshot::channel();
         let proposal = Message::Propose { proposal: message, chan: tx };
         let mut sender = self.0.clone();
+        // TODO make timeout duration a variable
         match sender.send(proposal).await {
             Ok(_) => {
-                match rx.await {
-                    Ok(RaftResponse::Response { data }) => Ok(data),
+                match timeout(Duration::from_secs(2), rx).await {
+                    Ok(Ok(RaftResponse::Response { data })) => Ok(data),
                     _ => Err(RaftError),
                 }
             }
