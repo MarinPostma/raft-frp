@@ -25,6 +25,7 @@ heed-traits = "0.7.0"
 slog-async = "2"
 slog-term = "2"
 slog = "2"
+slog-stdlog = "4"
 
 [build-dependencies]
 tonic-build = "0.3.0"
