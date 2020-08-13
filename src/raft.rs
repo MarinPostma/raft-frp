@@ -2,15 +2,13 @@ use crate::message::{Message, RaftResponse};
 use crate::raft_node::RaftNode;
 use crate::raft_server::RaftServer;
 use crate::raft_service::raft_service_client::RaftServiceClient;
-use crate::raft_service::ConfigChange;
 use crate::raft_service::{Empty, ResultCode};
 use crate::RaftError;
 
 use anyhow::{anyhow, Result};
 use bincode::deserialize;
 use bincode::serialize;
-use log::{warn, info};
-use protobuf::Message as _;
+use log::{info, warn};
 use raftrs::eraftpb::{ConfChange, ConfChangeType};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
@@ -44,16 +42,17 @@ impl Mailbox {
     /// leader
     pub async fn send(&self, message: Vec<u8>) -> Result<Vec<u8>, RaftError> {
         let (tx, rx) = oneshot::channel();
-        let proposal = Message::Propose { proposal: message, chan: tx };
+        let proposal = Message::Propose {
+            proposal: message,
+            chan: tx,
+        };
         let mut sender = self.0.clone();
         // TODO make timeout duration a variable
         match sender.send(proposal).await {
-            Ok(_) => {
-                match timeout(Duration::from_secs(2), rx).await {
-                    Ok(Ok(RaftResponse::Response { data })) => Ok(data),
-                    _ => Err(RaftError),
-                }
-            }
+            Ok(_) => match timeout(Duration::from_secs(2), rx).await {
+                Ok(Ok(RaftResponse::Response { data })) => Ok(data),
+                _ => Err(RaftError),
+            },
             _ => Err(RaftError),
         }
     }
@@ -63,15 +62,13 @@ impl Mailbox {
         // set node id to 0, the node will set it to self when it receives it.
         change.set_node_id(0);
         change.set_change_type(ConfChangeType::RemoveNode);
-        let mut sender= self.0.clone();
+        let mut sender = self.0.clone();
         let (chan, rx) = oneshot::channel();
         match sender.send(Message::ConfigChange { change, chan }).await {
-            Ok(_) => {
-                match rx.await {
-                    Ok(RaftResponse::Ok) => Ok(()),
-                    _ => Err(RaftError),
-                }
-            }
+            Ok(_) => match rx.await {
+                Ok(RaftResponse::Ok) => Ok(()),
+                _ => Err(RaftError),
+            },
             _ => Err(RaftError),
         }
     }
@@ -82,13 +79,20 @@ pub struct Raft<S: Store + 'static> {
     tx: mpsc::Sender<Message>,
     rx: mpsc::Receiver<Message>,
     addr: String,
+    logger: slog::Logger,
 }
 
 impl<S: Store + Send + Sync + 'static> Raft<S> {
     /// creates a new node with the given address and store.
-    pub fn new(addr: String, store: S) -> Self {
+    pub fn new(addr: String, store: S, logger: slog::Logger) -> Self {
         let (tx, rx) = mpsc::channel(100);
-        Self { store, tx, rx, addr}
+        Self {
+            store,
+            tx,
+            rx,
+            addr,
+            logger,
+        }
     }
 
     /// gets the node's `Mailbox`.
@@ -100,7 +104,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
     /// cluster that is initialised that way
     pub async fn lead(self) -> Result<()> {
         let addr = self.addr.clone();
-        let node = RaftNode::new_leader(self.rx, self.tx.clone(), self.store);
+        let node = RaftNode::new_leader(self.rx, self.tx.clone(), self.store, &self.logger);
         let server = RaftServer::new(self.tx, addr);
         let _server_handle = tokio::spawn(server.run());
         let node_handle = tokio::spawn(node.run());
@@ -133,8 +137,8 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
                 ResultCode::Ok => break deserialize(&response.data)?,
                 ResultCode::Error => {
                     return Err(anyhow!(
-                            "join error: {}",
-                            deserialize::<String>(&response.data)?
+                        "join error: {}",
+                        deserialize::<String>(&response.data)?
                     ))
                 }
             }
@@ -143,7 +147,8 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
         info!("obtained ID from leader: {}", node_id);
         // 2. run server and node to prepare for joining
         let addr = self.addr.clone();
-        let mut node = RaftNode::new_follower(self.rx, self.tx.clone(), node_id, self.store);
+        let mut node =
+            RaftNode::new_follower(self.rx, self.tx.clone(), node_id, self.store, &self.logger);
         node.add_peer(&leader_addr, leader_id).await?;
         let mut client = node.peer_mut(leader_id).unwrap().clone();
         let server = RaftServer::new(self.tx, addr);
@@ -156,11 +161,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
         change.set_node_id(node_id);
         change.set_change_type(ConfChangeType::AddNode);
         change.set_context(serialize(&self.addr)?);
-        client
-            .change_config(Request::new(ConfigChange {
-                inner: change.write_to_bytes()?,
-            }))
-        .await?;
+        client.change_config(Request::new(change)).await?;
         tokio::try_join!(node_handle)?;
 
         Ok(())

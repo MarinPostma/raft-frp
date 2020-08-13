@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::message::{Message, RaftResponse};
 use crate::raft_service::raft_service_server::{RaftServiceServer, RaftService};
-use crate::raft_service::{self, ConfigChange, Empty };
+use crate::raft_service::{self, Empty };
 
 use log::{error, info, warn};
 use raftrs::eraftpb::{ConfChange, Message as RaftMessage};
@@ -13,7 +13,6 @@ use tokio::time::timeout;
 use tonic::transport::Server;
 use tonic::{Status, Response, Request};
 use bincode::serialize;
-use protobuf::Message as _;
 
 pub struct RaftServer {
     snd: mpsc::Sender<Message>,
@@ -64,11 +63,8 @@ impl RaftService for RaftServer {
         }
     }
 
-    async fn change_config(&self, req: Request<ConfigChange>) -> Result<Response<raft_service::RaftResponse>, Status> {
-
-        let mut change = ConfChange::default();
-        change.merge_from_bytes(&req.into_inner().inner).unwrap();
-
+    async fn change_config(&self, req: Request<ConfChange>) -> Result<Response<raft_service::RaftResponse>, Status> {
+        let change = req.into_inner();
         let mut sender = self.snd.clone();
 
         let (tx, rx) = oneshot::channel();
@@ -100,11 +96,9 @@ impl RaftService for RaftServer {
         Ok(Response::new(reply))
     }
 
-    async fn send_message(&self, request: Request<raft_service::Message>) -> Result<Response<raft_service::RaftResponse>, Status> {
-        let request = request.into_inner();
+    async fn send_message(&self, request: Request<RaftMessage>) -> Result<Response<raft_service::RaftResponse>, Status> {
+        let message = request.into_inner();
         // again this ugly shit to serialize the message
-        let mut message = RaftMessage::default();
-        message.merge_from_bytes(&request.inner).unwrap();
         let mut sender = self.snd.clone();
         match sender.send(Message::Raft(message)).await {
             Ok(_) => (),

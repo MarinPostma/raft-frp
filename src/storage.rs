@@ -6,8 +6,8 @@ use heed::types::*;
 use raftrs::prelude::*;
 use heed_traits::{BytesDecode, BytesEncode};
 use std::borrow::Cow;
-use protobuf::Message;
 use log::{warn, info};
+use prost::Message;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Sync + Send>>;
 
@@ -30,7 +30,8 @@ struct HeedSnapshot;
 impl<'a> BytesEncode<'a> for HeedSnapshot{
     type EItem = Snapshot;
     fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        let bytes = item.write_to_bytes().ok()?;
+        let mut bytes = vec![];
+        item.encode(&mut bytes).ok()?;
         Some(Cow::Owned(bytes))
     }
 }
@@ -38,9 +39,7 @@ impl<'a> BytesEncode<'a> for HeedSnapshot{
 impl<'a> BytesDecode<'a> for HeedSnapshot{
     type DItem = Snapshot;
     fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        let mut snapshot= Snapshot::default();
-        snapshot.merge_from_bytes(bytes).ok()?;
-        Some(snapshot)
+        Message::decode(bytes).ok()
     }
 }
 
@@ -49,7 +48,8 @@ struct HeedEntry;
 impl<'a> BytesEncode<'a> for HeedEntry {
     type EItem = Entry;
     fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        let bytes = item.write_to_bytes().ok()?;
+        let mut bytes = vec![];
+        item.encode(&mut bytes).ok()?;
         Some(Cow::Owned(bytes))
     }
 }
@@ -57,9 +57,7 @@ impl<'a> BytesEncode<'a> for HeedEntry {
 impl<'a> BytesDecode<'a> for HeedEntry {
     type DItem = Entry;
     fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        let mut entry = Entry::default();
-        entry.merge_from_bytes(bytes).ok()?;
-        Some(entry)
+        Message::decode(bytes).ok()
     }
 }
 
@@ -68,16 +66,16 @@ struct HeedHardState;
 impl<'a> BytesEncode<'a> for HeedHardState {
     type EItem = HardState;
     fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        Some(Cow::Owned(item.write_to_bytes().ok()?))
+        let mut bytes = vec![];
+        item.encode(&mut bytes).ok()?;
+        Some(Cow::Owned(bytes))
     }
 }
 
 impl<'a> BytesDecode<'a> for HeedHardState {
     type DItem = HardState;
     fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        let mut hard_state = HardState::default();
-        hard_state.merge_from_bytes(bytes).ok();
-        Some(hard_state)
+        Message::decode(bytes).ok()
     }
 }
 
@@ -86,16 +84,16 @@ struct HeedConfState;
 impl<'a> BytesEncode<'a> for HeedConfState {
     type EItem = ConfState;
     fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        Some(Cow::Owned(item.write_to_bytes().ok()?))
+        let mut bytes = vec![];
+        item.encode(&mut bytes).ok()?;
+        Some(Cow::Owned(bytes))
     }
 }
 
 impl<'a> BytesDecode<'a> for HeedConfState {
     type DItem = ConfState;
     fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        let mut conf_state = ConfState::default();
-        conf_state.merge_from_bytes(bytes).ok();
-        Some(conf_state)
+        Message::decode(bytes).ok()
     }
 }
 
@@ -123,8 +121,8 @@ impl HeedStorageCore {
         
         let metadata_db = env.create_poly_database(Some("meta"))?;
 
-        let hard_state = HardState::new();
-        let conf_state = ConfState::new();
+        let hard_state = HardState::default();
+        let conf_state = ConfState::default();
         
 
         let storage = Self {
@@ -136,7 +134,7 @@ impl HeedStorageCore {
         let mut writer = storage.env.write_txn()?;
         storage.set_hard_state(&mut writer, &hard_state)?;
         storage.set_conf_state(&mut writer, &conf_state)?;
-        storage.append(&mut writer, &[Entry::new()])?;
+        storage.append(&mut writer, &[Entry::default()])?;
         writer.commit()?;
 
         Ok(storage)
@@ -208,6 +206,7 @@ impl HeedStorageCore {
         let iter = self.entries_db.range(&reader, &(low..high))?;
         let max_size: Option<u64> = max_size.into();
         let mut size_count = 0;
+        let mut buf = vec![];
         let entries = iter
             .filter_map(|e| {
                 
@@ -218,7 +217,9 @@ impl HeedStorageCore {
             .take_while(|entry| {
                 match max_size {
                     Some(max_size) => {
-                        size_count += entry.compute_size() as u64;
+                        entry.encode(&mut buf).unwrap();
+                        size_count += buf.len() as u64;
+                        buf.clear();
                         if size_count < max_size {
                             true
                         } else {
@@ -306,7 +307,7 @@ impl LogStore for HeedStorage {
         let hard_state = store.hard_state(&writer)?;
         let conf_state = store.conf_state(&writer)?;
 
-        let mut snapshot = Snapshot::new();
+        let mut snapshot = Snapshot::default();
         snapshot.set_data(data);
 
         let meta = snapshot.mut_metadata();

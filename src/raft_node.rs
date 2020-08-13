@@ -5,23 +5,22 @@ use std::time::{Duration, Instant};
 
 use crate::message::{Message, RaftResponse};
 use crate::raft::Store;
-
-use crate::storage::{HeedStorage, LogStore};
-use crate::raft_service;
 use crate::raft_service::raft_service_client::RaftServiceClient;
+use crate::storage::{HeedStorage, LogStore};
+
 use bincode::{deserialize, serialize};
 use log::*;
-use protobuf::Message as PMessage;
-use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType};
+use prost::Message as PMessage;
+use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType, Message as RaftMessage};
 use raftrs::{raw_node::RawNode, Config, prelude::*};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use tonic::transport::channel::Channel;
 use tonic::Request;
+use tonic::transport::channel::Channel;
 
 struct MessageSender {
-    message: Vec<u8>,
+    message: RaftMessage,
     client: RaftServiceClient<tonic::transport::channel::Channel>,
     client_id: u64,
     chan: mpsc::Sender<Message>,
@@ -35,9 +34,7 @@ impl MessageSender {
     async fn send(mut self) {
         let mut current_retry = 0usize;
         loop {
-            let message_request = Request::new(raft_service::Message {
-                inner: self.message.clone(),
-            });
+            let message_request = Request::new(self.message.clone());
             match self.client.send_message(message_request).await {
                 Ok(_) => {
                     return;
@@ -109,6 +106,7 @@ impl<S: Store + 'static> RaftNode<S> {
         rcv: mpsc::Receiver<Message>,
         snd: mpsc::Sender<Message>,
         store: S,
+        logger: &slog::Logger,
         ) -> Self {
         let config = Config {
             id: 1,
@@ -128,11 +126,11 @@ impl<S: Store + 'static> RaftNode<S> {
         // bring all nodes to the same initial state.
         s.mut_metadata().index = 1;
         s.mut_metadata().term = 1;
-        s.mut_metadata().mut_conf_state().nodes = vec![1];
+        s.mut_metadata().mut_conf_state().voters = vec![1];
 
         let mut storage = HeedStorage::create(".", 1).unwrap();
         storage.apply_snapshot(s).unwrap();
-        let mut inner = RawNode::new(&config, storage).unwrap();
+        let mut inner = RawNode::new(&config, storage, logger).unwrap();
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
         let last_snap_time = Instant::now();
@@ -157,6 +155,7 @@ impl<S: Store + 'static> RaftNode<S> {
         snd: mpsc::Sender<Message>,
         id: u64,
         store: S,
+        logger: &slog::Logger,
     ) -> Self {
         let config = Config {
             id,
@@ -171,7 +170,7 @@ impl<S: Store + 'static> RaftNode<S> {
         config.validate().unwrap();
 
         let storage = HeedStorage::create(".", id).unwrap();
-        let inner = RawNode::new(&config, storage).unwrap();
+        let inner = RawNode::new(&config, storage, logger).unwrap();
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
         let last_snap_time = Instant::now()
@@ -356,18 +355,19 @@ impl<S: Store + 'static> RaftNode<S> {
                 Some(ref peer) => peer.client.clone(),
                 None => continue,
             };
+
             let message_sender = MessageSender {
                 client_id: message.get_to(),
                 client: client.clone(),
                 chan: self.snd.clone(),
-                message: message.write_to_bytes().unwrap(),
+                message,
                 timeout: Duration::from_millis(100),
                 max_retries: 5,
             };
             tokio::spawn(message_sender.send());
         }
 
-        if !raftrs::raw_node::is_empty_snap(ready.snapshot()) {
+        if !ready.snapshot().is_empty() {
             let snapshot = ready.snapshot();
             self.store.restore(snapshot.get_data()).unwrap();
             let store = self.mut_store();
@@ -397,6 +397,7 @@ impl<S: Store + 'static> RaftNode<S> {
                     EntryType::EntryConfChange => {
                         self.handle_config_change(&entry, client_send).await
                     }
+                    EntryType::EntryConfChangeV2 => unimplemented!(),
                 }
             }
         }
@@ -408,11 +409,8 @@ impl<S: Store + 'static> RaftNode<S> {
         entry: &Entry,
         senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>,
     ) {
-        info!("handling config change");
         let seq: u64 = deserialize(entry.get_context()).unwrap();
-        let mut change = ConfChange::new();
-        // we do this to deserialize the conf. Very ugly, gotta find something better
-        change.merge_from_bytes(entry.get_data()).unwrap();
+        let change: ConfChange = PMessage::decode(entry.get_data()).unwrap();
         let id = change.get_node_id();
 
         let change_type = change.get_change_type();

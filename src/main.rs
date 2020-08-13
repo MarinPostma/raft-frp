@@ -1,3 +1,10 @@
+#[macro_use]
+extern crate slog;
+extern crate slog_term;
+extern crate slog_async;
+
+use slog::Drain;
+
 use raft::{Mailbox, Raft, RaftError, Store};
 use actix_web::{get, web, App, HttpServer, Responder};
 use log::info;
@@ -6,6 +13,7 @@ use std::sync::{Arc, RwLock};
 use structopt::StructOpt;
 use bincode::{serialize, deserialize};
 use serde::{Serialize, Deserialize};
+
 
 #[derive(Debug, StructOpt)]
 struct Options {
@@ -98,7 +106,15 @@ async fn leave(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain)
+        .chan_size(4096)
+        .overflow_strategy(slog_async::OverflowStrategy::Block)
+        .build()
+        .fuse();
+    let logger = slog::Logger::root(drain, o!());
+
     let options = Options::from_args();
     let store = HashStore::new();
 
@@ -106,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local = tokio::task::LocalSet::new();
     let _sys = actix_rt::System::run_in_tokio("server", &local);
 
-    let raft = Raft::new(options.raft_addr, store.clone());
+    let raft = Raft::new(options.raft_addr, store.clone(), logger.clone());
     let mailbox = Arc::new(raft.mailbox());
     let (raft_handle, mailbox) = match options.peer_addr {
         Some(addr) => {

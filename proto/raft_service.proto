@@ -1,10 +1,12 @@
 syntax = "proto3";
 package raftservice;
 
+import "eraftpb.proto";
+
 service RaftService {
   rpc RequestId(Empty) returns (IdRequestReponse) {}
-  rpc ChangeConfig(ConfigChange) returns (RaftResponse) {}
-  rpc SendMessage(Message) returns (RaftResponse) {}
+  rpc ChangeConfig(eraftpb.ConfChange) returns (RaftResponse) {}
+  rpc SendMessage(eraftpb.Message) returns (RaftResponse) {}
 }
 
 enum ResultCode {
@@ -29,14 +31,6 @@ message Entry {
   string value  = 2;
 }
 
-message ConfigChange {
-  bytes inner = 1;
-}
-
 message RaftResponse {
   bytes inner = 2;
-}
-
-message Message {
-  bytes inner = 1;
 }

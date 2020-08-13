@@ -13,9 +13,8 @@ env_logger = "0.7.1"
 futures = "0.3.5"
 futures-retry = "0.5.0"
 log = { version = "0.4", features = ["std"] }
-prost = "0.6.1"
-protobuf = "2"
-raftrs = { package = "raft", path = "/home/mpostma/.cargo/registry/src/github.com-1ecc6299db9ec823/raft-0.6.0-alpha" }
+prost = "0.6"
+raftrs = { package = "raft", git = "https://github.com/tikv/raft-rs.git", features = ["prost-codec"], default-features = false }
 serde = { version = "1.0.114", features = ["derive"] }
 structopt = "0.3"
 tokio = { version = "0.2", features = ["full"] }
@@ -23,6 +22,9 @@ tonic = "0.3.0"
 heed = "0.8.1"
 zerocopy = "0.3.0"
 heed-traits = "0.7.0"
+slog-async = "2"
+slog-term = "2"
+slog = "2"
 
 [build-dependencies]
 tonic-build = "0.3.0"
