@@ -1,15 +1,16 @@
-use std::sync::{RwLock, Arc, RwLockWriteGuard, RwLockReadGuard};
-use std::fs;
-use std::path::Path;
+use crate::error::Result;
+
 use heed::{PolyDatabase, Env, Database};
 use heed::types::*;
 use raftrs::prelude::*;
 use heed_traits::{BytesDecode, BytesEncode};
-use std::borrow::Cow;
 use log::{warn, info};
 use prost::Message;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Sync + Send>>;
+use std::sync::{RwLock, Arc, RwLockWriteGuard, RwLockReadGuard};
+use std::fs;
+use std::path::Path;
+use std::borrow::Cow;
 
 pub trait LogStore: Storage {
     fn append(&mut self, entries: &[Entry]) -> Result<()>;
@@ -299,9 +300,9 @@ impl Storage for HeedStorage {
             .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
         let mut raft_state = RaftState::default();
         raft_state.hard_state = store.hard_state(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
         raft_state.conf_state = store.conf_state(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
         warn!("raft_state: {:#?}", raft_state);
         Ok(raft_state)
     }
@@ -309,20 +310,20 @@ impl Storage for HeedStorage {
     fn entries(&self, low: u64, high: u64, max_size: impl Into<Option<u64>>) -> raftrs::Result<Vec<Entry>> {
         let store = self.rl();
         let entries = store.entries(low, high, max_size)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
         Ok(entries)
     }
 
     fn term(&self, idx: u64) -> raftrs::Result<u64> {
         let store = self.rl();
         let reader = store.env.read_txn()
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
+            .map_err(|_| raftrs::Error::Store(raftrs::StorageError::Unavailable))?;
         let first_index = store.first_index(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
+            .map_err(|_| raftrs::Error::Store(raftrs::StorageError::Unavailable))?;
         let last_index = store.last_index(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e.into())))?;
+            .map_err(|_| raftrs::Error::Store(raftrs::StorageError::Unavailable))?;
         let hard_state = store.hard_state(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+            .map_err(|_| raftrs::Error::Store(raftrs::StorageError::Unavailable))?;
         if idx == hard_state.commit {
             return Ok(hard_state.term)
         }
@@ -336,7 +337,7 @@ impl Storage for HeedStorage {
         }
 
         let entry = store.entry(&reader, idx)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+            .map_err(|_| raftrs::Error::Store(raftrs::StorageError::Unavailable))?;
         Ok(entry.map(|e| e.term).unwrap_or(0))
     }
 
@@ -344,14 +345,14 @@ impl Storage for HeedStorage {
         let store = self.rl();
         let reader = store.env.read_txn().unwrap();
         store.first_index(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))
+            .map_err(|_| raftrs::Error::Store(raftrs::StorageError::Unavailable))
     }
 
     fn last_index(&self) -> raftrs::Result<u64> {
         let store = self.rl();
         let reader = store.env.read_txn().unwrap();
         let last_index = store.last_index(&reader)
-            .map_err(|e| raftrs::Error::Store(raftrs::StorageError::Other(e)))?;
+            .map_err(|_| raftrs::Error::Store(raftrs::StorageError::Unavailable))?;
         
         Ok(last_index)
     }

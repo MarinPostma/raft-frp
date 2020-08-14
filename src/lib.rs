@@ -7,5 +7,5 @@ mod error;
 mod storage;
 
 pub use crate::raft::{Store, Raft, Mailbox};
-pub use crate::error::RaftError;
+pub use crate::error::{Error, Result};
 

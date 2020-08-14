@@ -5,8 +5,8 @@ extern crate slog_async;
 
 use slog::Drain;
 
-use raft::{Mailbox, Raft, RaftError, Store};
-use actix_web::{get, web, App, HttpServer, Responder};
+use raft::{Mailbox, Raft, Store, Result};
+use actix_web::{get, web, App, HttpServer, Responder };
 use log::info;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -41,9 +41,7 @@ impl HashStore {
 }
 
 impl Store for HashStore {
-    type Error = RaftError;
-
-    fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>, Self::Error> {
+    fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>> {
         let message: Message = deserialize(message).unwrap();
         let message: Vec<u8> = match message {
             Message::Insert { key, value } => {
@@ -61,7 +59,7 @@ impl Store for HashStore {
         serialize(&self.0.read().unwrap().clone()).unwrap()
     }
 
-    fn restore(&mut self, snapshot: &[u8]) -> Result<(), Self::Error> {
+    fn restore(&mut self, snapshot: &[u8]) -> Result<()> {
         let new: HashMap<u64, String> = deserialize(snapshot).unwrap();
         let mut db = self.0.write().unwrap();
         let _ = std::mem::replace(&mut *db, new);
@@ -105,7 +103,7 @@ async fn leave(
 
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();

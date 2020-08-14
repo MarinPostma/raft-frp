@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::error::Result;
 use crate::message::{Message, RaftResponse};
 use crate::raft::Store;
 use crate::raft_service::raft_service_client::RaftServiceClient;
@@ -12,12 +13,12 @@ use bincode::{deserialize, serialize};
 use log::*;
 use prost::Message as PMessage;
 use raftrs::eraftpb::{ConfChange, ConfChangeType, Entry, EntryType, Message as RaftMessage};
-use raftrs::{raw_node::RawNode, Config, prelude::*};
+use raftrs::{prelude::*, raw_node::RawNode, Config};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use tonic::Request;
 use tonic::transport::channel::Channel;
+use tonic::Request;
 
 struct MessageSender {
     message: RaftMessage,
@@ -30,7 +31,7 @@ struct MessageSender {
 
 impl MessageSender {
     /// attempt to send a message MessageSender::max_retries times at MessageSender::timeout
-    /// inteval. 
+    /// inteval.
     async fn send(mut self) {
         let mut current_retry = 0usize;
         loop {
@@ -38,13 +39,16 @@ impl MessageSender {
             match self.client.send_message(message_request).await {
                 Ok(_) => {
                     return;
-                },
+                }
                 Err(e) => {
                     if current_retry < self.max_retries {
                         current_retry += 1;
                         tokio::time::delay_for(self.timeout).await;
                     } else {
-                        debug!("error sending message after {} retries: {}", self.max_retries, e);
+                        debug!(
+                            "error sending message after {} retries: {}",
+                            self.max_retries, e
+                        );
                         let _ = self
                             .chan
                             .send(Message::ReportUnreachable {
@@ -79,7 +83,7 @@ impl DerefMut for Peer {
 }
 
 impl Peer {
-    pub async fn new(addr: &str) -> Result<Peer, tonic::transport::Error> {
+    pub async fn new(addr: &str) -> Result<Peer> {
         // TODO: clean up this mess
         info!("connecting to node at {}...", addr);
         let client = RaftServiceClient::connect(format!("http://{}", addr)).await?;
@@ -107,7 +111,7 @@ impl<S: Store + 'static> RaftNode<S> {
         snd: mpsc::Sender<Message>,
         store: S,
         logger: &slog::Logger,
-        ) -> Self {
+    ) -> Self {
         let config = Config {
             id: 1,
             election_tick: 10,
@@ -156,7 +160,7 @@ impl<S: Store + 'static> RaftNode<S> {
         id: u64,
         store: S,
         logger: &slog::Logger,
-    ) -> Self {
+    ) -> Result<Self> {
         let config = Config {
             id,
             election_tick: 10,
@@ -169,15 +173,15 @@ impl<S: Store + 'static> RaftNode<S> {
 
         config.validate().unwrap();
 
-        let storage = HeedStorage::create(".", id).unwrap();
-        let inner = RawNode::new(&config, storage, logger).unwrap();
+        let storage = HeedStorage::create(".", id)?;
+        let inner = RawNode::new(&config, storage, logger)?;
         let peers = HashMap::new();
         let seq = AtomicU64::new(0);
         let last_snap_time = Instant::now()
             .checked_sub(Duration::from_secs(1000))
             .unwrap();
 
-        RaftNode {
+        Ok(RaftNode {
             inner,
             rcv,
             peers,
@@ -186,7 +190,7 @@ impl<S: Store + 'static> RaftNode<S> {
             snd,
             should_quit: false,
             last_snap_time,
-        }
+        })
     }
 
     pub fn peer_mut(&mut self, id: u64) -> Option<&mut Peer> {
@@ -204,7 +208,7 @@ impl<S: Store + 'static> RaftNode<S> {
         self.raft.id
     }
 
-    pub async fn add_peer(&mut self, addr: &str, id: u64) -> Result<(), tonic::transport::Error> {
+    pub async fn add_peer(&mut self, addr: &str, id: u64) -> Result<()> {
         let peer = Peer::new(addr).await?;
         self.peers.insert(id, Some(peer));
         Ok(())
@@ -234,7 +238,7 @@ impl<S: Store + 'static> RaftNode<S> {
         next_id
     }
 
-    fn send_wrong_leader(&self, channel: oneshot::Sender<RaftResponse>) -> Result<(), RaftResponse> {
+    fn send_wrong_leader(&self, channel: oneshot::Sender<RaftResponse>) -> Result<()> {
         let leader_id = self.leader();
         // leader can't be an empty node
         let leader_addr = self.peers[&leader_id].as_ref().unwrap().addr.clone();
@@ -242,10 +246,12 @@ impl<S: Store + 'static> RaftNode<S> {
             leader_id,
             leader_addr,
         };
-        channel.send(raft_response)
+        // TODO handle error here
+        let _ = channel.send(raft_response);
+        Ok(())
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> Result<()> {
         let mut heartbeat = Duration::from_millis(100);
         let mut now = Instant::now();
 
@@ -255,7 +261,7 @@ impl<S: Store + 'static> RaftNode<S> {
         loop {
             if self.should_quit {
                 warn!("Quitting raft");
-                return;
+                return Ok(());
             }
             match timeout(heartbeat, self.rcv.recv()).await {
                 Ok(Some(Message::ConfigChange { chan, mut change })) => {
@@ -267,15 +273,13 @@ impl<S: Store + 'static> RaftNode<S> {
                     if !self.is_leader() {
                         // wrong leader send client cluster data
                         // TODO: retry strategy in case of failure
-                        self.send_wrong_leader(chan).unwrap();
+                        self.send_wrong_leader(chan)?;
                     } else {
                         // leader assign new id to peer
                         debug!("received request from: {}", change.get_node_id());
                         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
                         client_send.insert(seq, chan);
-                        self.propose_conf_change(serialize(&seq).unwrap(), change)
-                            .unwrap();
-                        
+                        self.propose_conf_change(serialize(&seq).unwrap(), change)?;
                     }
                 }
                 Ok(Some(Message::Raft(m))) => {
@@ -326,13 +330,13 @@ impl<S: Store + 'static> RaftNode<S> {
                 heartbeat -= elapsed;
             }
 
-            self.on_ready(&mut client_send).await;
+            self.on_ready(&mut client_send).await?;
         }
     }
 
-    async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) {
+    async fn on_ready(&mut self, client_send: &mut HashMap<u64, oneshot::Sender<RaftResponse>>) -> Result<()>{
         if !self.has_ready() {
-            return;
+            return Ok(());
         }
 
         let mut ready = self.ready();
@@ -350,7 +354,11 @@ impl<S: Store + 'static> RaftNode<S> {
         }
 
         for message in ready.messages.drain(..) {
-            debug!("message from {} to {}", message.get_from(), message.get_to());
+            debug!(
+                "message from {} to {}",
+                message.get_from(),
+                message.get_to()
+            );
             let client = match self.peer_mut(message.get_to()) {
                 Some(ref peer) => peer.client.clone(),
                 None => continue,
@@ -369,15 +377,15 @@ impl<S: Store + 'static> RaftNode<S> {
 
         if !ready.snapshot().is_empty() {
             let snapshot = ready.snapshot();
-            self.store.restore(snapshot.get_data()).unwrap();
+            self.store.restore(snapshot.get_data())?;
             let store = self.mut_store();
-            store.apply_snapshot(snapshot.clone()).unwrap();
+            store.apply_snapshot(snapshot.clone())?;
         }
 
         if let Some(hs) = ready.hs() {
             // Raft HardState changed, and we need to persist it.
             let store = self.mut_store();
-            store.set_hard_state(hs).unwrap();
+            store.set_hard_state(hs)?;
         }
 
         if let Some(committed_entries) = ready.committed_entries.take() {
@@ -395,29 +403,30 @@ impl<S: Store + 'static> RaftNode<S> {
                 match entry.get_entry_type() {
                     EntryType::EntryNormal => self.handle_normal(&entry, client_send),
                     EntryType::EntryConfChange => {
-                        self.handle_config_change(&entry, client_send).await
+                        self.handle_config_change(&entry, client_send).await?
                     }
                     EntryType::EntryConfChangeV2 => unimplemented!(),
                 }
             }
         }
         self.advance(ready);
+        Ok(())
     }
 
     async fn handle_config_change(
         &mut self,
         entry: &Entry,
         senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>,
-    ) {
-        let seq: u64 = deserialize(entry.get_context()).unwrap();
-        let change: ConfChange = PMessage::decode(entry.get_data()).unwrap();
+    ) -> Result<()>{
+        let seq: u64 = deserialize(entry.get_context())?;
+        let change: ConfChange = PMessage::decode(entry.get_data())?;
         let id = change.get_node_id();
 
         let change_type = change.get_change_type();
 
         match change_type {
             ConfChangeType::AddNode => {
-                let addr: String = deserialize(change.get_context()).unwrap();
+                let addr: String = deserialize(change.get_context())?;
                 info!("adding {} ({}) to peers", addr, id);
                 self.add_peer(&addr, id).await.unwrap();
             }
@@ -437,9 +446,9 @@ impl<S: Store + 'static> RaftNode<S> {
             let snapshot = self.store.snapshot();
             {
                 let store = self.mut_store();
-                store.set_conf_state(&cs).unwrap();
-                store.compact(last_applied).unwrap();
-                let _ = store.create_snapshot(snapshot);
+                store.set_conf_state(&cs)?;
+                store.compact(last_applied)?;
+                let _ = store.create_snapshot(snapshot)?;
             }
         }
 
@@ -460,6 +469,7 @@ impl<S: Store + 'static> RaftNode<S> {
             }
             None => (),
         }
+        Ok(())
     }
 
     fn handle_normal(
