@@ -112,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let drain = slog_async::Async::new(drain).build().fuse();
     let logger = slog::Logger::root(drain, slog_o!("version" => env!("CARGO_PKG_VERSION")));
 
+    // converts log to slog
     let _log_guard = slog_stdlog::init().unwrap();
 
     let options = Options::from_args();

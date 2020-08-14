@@ -25,77 +25,33 @@ const LAST_INDEX_KEY: &str = "last_index";
 const HARD_STATE_KEY: &str = "hard_state";
 const CONF_STATE_KEY: &str = "conf_state";
 
-struct HeedSnapshot;
+macro_rules! heed_type {
+    ($heed_type:ident, $type:ty) => {
 
-impl<'a> BytesEncode<'a> for HeedSnapshot{
-    type EItem = Snapshot;
-    fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        let mut bytes = vec![];
-        item.encode(&mut bytes).ok()?;
-        Some(Cow::Owned(bytes))
-    }
+        struct $heed_type;
+
+        impl<'a> BytesEncode<'a> for $heed_type {
+            type EItem = $type;
+            fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
+                let mut bytes = vec![];
+                prost::Message::encode(item, &mut bytes).ok()?;
+                Some(Cow::Owned(bytes))
+            }
+        }
+
+        impl<'a> BytesDecode<'a> for $heed_type {
+            type DItem = $type;
+            fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
+                prost::Message::decode(bytes).ok()
+            }
+        }
+    };
 }
 
-impl<'a> BytesDecode<'a> for HeedSnapshot{
-    type DItem = Snapshot;
-    fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        Message::decode(bytes).ok()
-    }
-}
-
-struct HeedEntry;
-
-impl<'a> BytesEncode<'a> for HeedEntry {
-    type EItem = Entry;
-    fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        let mut bytes = vec![];
-        item.encode(&mut bytes).ok()?;
-        Some(Cow::Owned(bytes))
-    }
-}
-
-impl<'a> BytesDecode<'a> for HeedEntry {
-    type DItem = Entry;
-    fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        Message::decode(bytes).ok()
-    }
-}
-
-struct HeedHardState;
-
-impl<'a> BytesEncode<'a> for HeedHardState {
-    type EItem = HardState;
-    fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        let mut bytes = vec![];
-        item.encode(&mut bytes).ok()?;
-        Some(Cow::Owned(bytes))
-    }
-}
-
-impl<'a> BytesDecode<'a> for HeedHardState {
-    type DItem = HardState;
-    fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        Message::decode(bytes).ok()
-    }
-}
-
-struct HeedConfState;
-
-impl<'a> BytesEncode<'a> for HeedConfState {
-    type EItem = ConfState;
-    fn bytes_encode(item: &'a Self::EItem) -> Option<Cow<'a, [u8]>> {
-        let mut bytes = vec![];
-        item.encode(&mut bytes).ok()?;
-        Some(Cow::Owned(bytes))
-    }
-}
-
-impl<'a> BytesDecode<'a> for HeedConfState {
-    type DItem = ConfState;
-    fn bytes_decode(bytes: &'a [u8]) -> Option<Self::DItem> {
-        Message::decode(bytes).ok()
-    }
-}
+heed_type!(HeedSnapshot, Snapshot);
+heed_type!(HeedEntry, Entry);
+heed_type!(HeedHardState, HardState);
+heed_type!(HeedConfState, ConfState);
 
 pub struct HeedStorageCore {
     env: Env,
