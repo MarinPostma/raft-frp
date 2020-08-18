@@ -1577,6 +1577,34 @@ dependencies = [
 
 [[package]]
 name = "raft"
+version = "0.1.0"
+dependencies = [
+ "actix-rt",
+ "actix-web",
+ "bincode",
+ "futures",
+ "futures-retry",
+ "heed",
+ "heed-traits",
+ "log",
+ "prost",
+ "raft 0.6.0-alpha",
+ "serde",
+ "slog",
+ "slog-async",
+ "slog-stdlog",
+ "slog-term",
+ "structopt",
+ "tempdir",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "zerocopy",
+]
+
+[[package]]
+name = "raft"
 version = "0.6.0-alpha"
 source = "git+https://github.com/tikv/raft-rs.git#eec5ead3ebe8f790154c94cb5f5adb0063a674e9"
 dependencies = [
@@ -1598,34 +1626,6 @@ dependencies = [
  "prost",
  "protobuf",
  "protobuf-build",
-]
-
-[[package]]
-name = "raft-test"
-version = "0.1.0"
-dependencies = [
- "actix-rt",
- "actix-web",
- "bincode",
- "futures",
- "futures-retry",
- "heed",
- "heed-traits",
- "log",
- "prost",
- "raft",
- "serde",
- "slog",
- "slog-async",
- "slog-stdlog",
- "slog-term",
- "structopt",
- "tempdir",
- "thiserror",
- "tokio",
- "tonic",
- "tonic-build",
- "zerocopy",
 ]
 
 [[package]]

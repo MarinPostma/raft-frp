@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tonic::transport::Server;
 use tonic::{Status, Response, Request};
+use bincode::serialize;
 
 pub struct RaftServer {
     snd: mpsc::Sender<Message>,
