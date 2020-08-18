@@ -377,7 +377,7 @@ impl<S: Store + 'static> RaftNode<S> {
 
         if !ready.snapshot().is_empty() {
             let snapshot = ready.snapshot();
-            self.store.restore(snapshot.get_data())?;
+            self.store.restore(snapshot.get_data()).await?;
             let store = self.mut_store();
             store.apply_snapshot(snapshot.clone())?;
         }
@@ -401,10 +401,8 @@ impl<S: Store + 'static> RaftNode<S> {
                 }
 
                 match entry.get_entry_type() {
-                    EntryType::EntryNormal => self.handle_normal(&entry, client_send),
-                    EntryType::EntryConfChange => {
-                        self.handle_config_change(&entry, client_send).await?
-                    }
+                    EntryType::EntryNormal => self.handle_normal(&entry, client_send).await?,
+                    EntryType::EntryConfChange => self.handle_config_change(&entry, client_send).await?,
                     EntryType::EntryConfChangeV2 => unimplemented!(),
                 }
             }
@@ -443,7 +441,7 @@ impl<S: Store + 'static> RaftNode<S> {
 
         if let Ok(cs) = self.apply_conf_change(&change) {
             let last_applied = self.raft.raft_log.applied;
-            let snapshot = self.store.snapshot();
+            let snapshot = self.store.snapshot().await?;
             {
                 let store = self.mut_store();
                 store.set_conf_state(&cs)?;
@@ -472,13 +470,13 @@ impl<S: Store + 'static> RaftNode<S> {
         Ok(())
     }
 
-    fn handle_normal(
+    async fn handle_normal(
         &mut self,
         entry: &Entry,
         senders: &mut HashMap<u64, oneshot::Sender<RaftResponse>>,
-    ) {
-        let seq: u64 = deserialize(&entry.get_context()).unwrap();
-        let data = self.store.apply(entry.get_data()).unwrap();
+    ) -> Result<()> {
+        let seq: u64 = deserialize(&entry.get_context())?;
+        let data = self.store.apply(entry.get_data()).await?;
         if let Some(sender) = senders.remove(&seq) {
             sender.send(RaftResponse::Response { data }).unwrap();
         }
@@ -487,11 +485,12 @@ impl<S: Store + 'static> RaftNode<S> {
             info!("creating backup..");
             self.last_snap_time = Instant::now();
             let last_applied = self.raft.raft_log.applied;
-            let snapshot = self.store.snapshot();
+            let snapshot = self.store.snapshot().await?;
             let store = self.mut_store();
             store.compact(last_applied).unwrap();
             let _ = store.create_snapshot(snapshot);
         }
+        Ok(())
     }
 }
 

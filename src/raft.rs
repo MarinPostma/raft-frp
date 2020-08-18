@@ -11,13 +11,15 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use tonic::Request;
 use bincode::{deserialize, serialize};
+use async_trait::async_trait;
 
 use std::time::Duration;
 
+#[async_trait]
 pub trait Store {
-    fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>>;
-    fn snapshot(&self) -> Vec<u8>;
-    fn restore(&mut self, snapshot: &[u8]) -> Result<()>;
+    async fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>>;
+    async fn snapshot(&self) -> Result<Vec<u8>>;
+    async fn restore(&mut self, snapshot: &[u8]) -> Result<()>;
 }
 
 /// A mailbox to send messages to a ruung raft node.
@@ -107,6 +109,7 @@ impl<S: Store + Send + Sync + 'static> Raft<S> {
         // 1. try to discover the leader and obtain an id from it.
         info!("attempting to join peer cluster at {}", addr);
         let mut leader_addr = addr.to_string();
+
         let (leader_id, node_id): (u64, u64) = loop {
             let mut client = RaftServiceClient::connect(format!("http://{}", leader_addr)).await?;
             let response = client

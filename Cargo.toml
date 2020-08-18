@@ -25,6 +25,7 @@ slog-term = "2"
 slog = "2"
 slog-stdlog = "4"
 thiserror = "1.0.20"
+async-trait = "0.1.38"
 
 [build-dependencies]
 tonic-build = "0.3.0"

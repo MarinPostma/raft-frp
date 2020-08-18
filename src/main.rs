@@ -13,6 +13,7 @@ use std::sync::{Arc, RwLock};
 use structopt::StructOpt;
 use bincode::{serialize, deserialize};
 use serde::{Serialize, Deserialize};
+use async_trait::async_trait;
 
 
 #[derive(Debug, StructOpt)]
@@ -40,8 +41,9 @@ impl HashStore {
     }
 }
 
+#[async_trait]
 impl Store for HashStore {
-    fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>> {
+    async fn apply(&mut self, message: &[u8]) -> Result<Vec<u8>> {
         let message: Message = deserialize(message).unwrap();
         let message: Vec<u8> = match message {
             Message::Insert { key, value } => {
@@ -55,11 +57,11 @@ impl Store for HashStore {
         Ok(message)
     }
 
-    fn snapshot(&self) -> Vec<u8> {
-        serialize(&self.0.read().unwrap().clone()).unwrap()
+    async fn snapshot(&self) -> Result<Vec<u8>> {
+        Ok(serialize(&self.0.read().unwrap().clone())?)
     }
 
-    fn restore(&mut self, snapshot: &[u8]) -> Result<()> {
+    async fn restore(&mut self, snapshot: &[u8]) -> Result<()> {
         let new: HashMap<u64, String> = deserialize(snapshot).unwrap();
         let mut db = self.0.write().unwrap();
         let _ = std::mem::replace(&mut *db, new);
