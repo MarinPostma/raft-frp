@@ -1,4 +1,4 @@
-# This project is not maintened anymore
+# This project is not maintained anymore
 # RAFT, for regular people
 
 This is an attempt to create a layer on top of
